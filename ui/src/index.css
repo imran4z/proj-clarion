@@ -20,45 +20,68 @@
 */
 
 @theme {
-  /* ── Surfaces — three depths, same hue ──
-     Dark canvas lifted slightly (#0c0e15 → was #0a0b10) so the absolute
-     black doesn't read as "broken display" on OLED screens or in
-     bright rooms. Elev steps widened so layering reads clearly. */
-  --color-canvas:        #0c0e15;
-  --color-canvas-elev1:  #141824;   /* cards, panels */
-  --color-canvas-elev2:  #1c2030;   /* modals, popovers, dropdowns */
-  --color-canvas-elev3:  #232838;   /* tooltips, command palette */
+  /* ── Surfaces — Signal direction ──
+     Deep slate canvas; reads as instrument / telemetry / observability
+     without borrowing Grafana's orange. Three elevation steps for
+     card / popover / tooltip layering.
+     (Tokens from claude_design_assets/clarion-redesign.html: data-direction="signal".) */
+  --color-canvas:        #0a0e14;
+  --color-canvas-elev1:  #131820;
+  --color-canvas-elev2:  #1c232d;
+  --color-canvas-elev3:  #252e3a;
 
   /* Borders — two strengths */
   --color-border:        rgba(255, 255, 255, 0.07);
-  --color-border-strong: rgba(255, 255, 255, 0.14);
+  --color-border-strong: rgba(255, 255, 255, 0.16);
 
   /* Text — three contrast levels */
-  --color-text:          #ecedf4;   /* primary copy */
-  --color-text-muted:    #a4a9b9;   /* labels, captions */
-  --color-text-faint:    #6f7488;   /* placeholders — meets AA on canvas */
+  --color-text:          #eef3f8;
+  --color-text-muted:    #a3b3c4;
+  --color-text-faint:    #6e8093;
 
-  /* Brand accent */
-  --color-accent:        #a78bfa;   /* violet-400 */
-  --color-accent-hover:  #b89dfb;
-  --color-accent-bg:     rgba(167, 139, 250, 0.14);
-  --color-accent-border: rgba(167, 139, 250, 0.42);
-  --color-on-accent:     #ffffff;   /* text colour on solid accent buttons */
+  /* Brand accent — teal-400. Used for primary actions, focus rings,
+     "active phase" state. Replaces the prior violet. */
+  --color-accent:        #2dd4bf;
+  --color-accent-hover:  #14b8a6;          /* teal-500 — pressed / hover state */
+  --color-accent-deep:   #14b8a6;          /* canonical alias for the deep tone */
+  --color-accent-bg:     rgba(45, 212, 191, 0.12);
+  --color-accent-border: rgba(45, 212, 191, 0.36);
+  --color-on-accent:     #042220;          /* dark on teal for contrast */
 
-  /* Grafana hint — used sparingly */
+  /* "Live" — telemetry-flowing state, distinct from success. A demo
+     session with the emitter pulsing uses --color-live (pale green);
+     a completed phase uses --color-success (saturated green). */
+  --color-live:          #6ee7b7;
+  --color-live-bg:       rgba(110, 231, 183, 0.12);
+
+  /* Signal — sky-300 secondary tier. For accents that aren't the
+     primary action — secondary callouts, sparkline trails, etc. */
+  --color-signal:        #7dd3fc;
+  --color-signal-bg:     rgba(125, 211, 252, 0.12);
+
+  /* Grafana hint — kept for backward compat; deprecated. Use --color-accent
+     for new code. Will be removed once existing references are migrated. */
   --color-grafana:       #FF8833;
   --color-grafana-bg:    rgba(255, 136, 51, 0.14);
   --color-grafana-border: rgba(255, 136, 51, 0.42);
 
   /* Status colors */
   --color-success:       #34d399;
-  --color-success-bg:    rgba(52, 211, 153, 0.14);
+  --color-success-bg:    rgba(52, 211, 153, 0.12);
   --color-warning:       #fbbf24;
-  --color-warning-bg:    rgba(251, 191, 36, 0.14);
-  --color-danger:        #f87171;
-  --color-danger-bg:     rgba(248, 113, 113, 0.14);
-  --color-info:          #60a5fa;
-  --color-info-bg:       rgba(96, 165, 250, 0.14);
+  --color-warning-bg:    rgba(251, 191, 36, 0.12);
+  --color-danger:        #fb7185;          /* rose-400 — slightly less harsh than red-400 on dark */
+  --color-danger-bg:     rgba(251, 113, 133, 0.12);
+  --color-info:          #93c5fd;
+  --color-info-bg:       rgba(147, 197, 253, 0.12);
+
+  /* Layout primitives — radii + shadow envelopes */
+  --radius:              14px;
+  --radius-sm:           8px;
+  --radius-lg:           20px;
+  --shadow-sm:           0 1px 2px rgba(0,0,0,.06), 0 1px 1px rgba(0,0,0,.04);
+  --shadow-md:           0 4px 20px -4px rgba(0,0,0,.18), 0 2px 6px -2px rgba(0,0,0,.08);
+  --shadow-lg:           0 24px 60px -20px rgba(0,0,0,.45), 0 8px 24px -8px rgba(0,0,0,.20);
 
   /* Typography */
   --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -85,41 +108,52 @@
      scream "table cell" but still read as separation
 */
 [data-theme="light"] {
-  /* Surfaces — flip the elevation polarity */
-  --color-canvas:        #f7f8fa;   /* soft off-white, easier than #fff on eyes */
+  /* Signal direction — light theme. Off-white canvas with pure white
+     cards; teal-700 accent for contrast on white. Status colours bumped
+     one step darker so they all pass WCAG AA on the soft-white canvas. */
+  --color-canvas:        #f4f7fa;
   --color-canvas-elev1:  #ffffff;
   --color-canvas-elev2:  #ffffff;
   --color-canvas-elev3:  #ffffff;
 
-  /* Borders — darker, semi-transparent */
-  --color-border:        rgba(15, 23, 42, 0.08);
-  --color-border-strong: rgba(15, 23, 42, 0.16);
+  /* Borders — slate-based with low alpha so they read as separation
+     without screaming "table cell". */
+  --color-border:        rgba(10, 30, 50, 0.08);
+  --color-border-strong: rgba(10, 30, 50, 0.20);
 
-  /* Text — darker for contrast */
-  --color-text:          #0f172a;   /* slate-900 */
-  --color-text-muted:    #475569;   /* slate-600 — 7.5:1 on canvas */
-  --color-text-faint:    #94a3b8;   /* slate-400 — 4.5:1 minimum AA */
+  /* Text — slate-900 / slate-600 / slate-500 */
+  --color-text:          #0a1a2a;
+  --color-text-muted:    #475467;
+  --color-text-faint:    #6b7a89;
 
-  /* Accent — darker violet for contrast on light surfaces */
-  --color-accent:        #7c3aed;   /* violet-600 */
-  --color-accent-hover:  #6d28d9;   /* violet-700 */
-  --color-accent-bg:     rgba(124, 58, 237, 0.10);
-  --color-accent-border: rgba(124, 58, 237, 0.34);
+  /* Accent — teal-700 (darker than the dark-mode teal-400 so it stays
+     ≥4.5:1 against white). */
+  --color-accent:        #0f766e;
+  --color-accent-hover:  #115e59;
+  --color-accent-deep:   #115e59;
+  --color-accent-bg:     rgba(15, 118, 110, 0.10);
+  --color-accent-border: rgba(15, 118, 110, 0.32);
   --color-on-accent:     #ffffff;
 
-  --color-grafana:       #ea580c;   /* orange-600 */
+  /* Live / Signal — darker variants for the light canvas */
+  --color-live:          #047857;
+  --color-live-bg:       rgba(4, 120, 87, 0.10);
+  --color-signal:        #075985;
+  --color-signal-bg:     rgba(7, 89, 133, 0.10);
+
+  --color-grafana:       #ea580c;
   --color-grafana-bg:    rgba(234, 88, 12, 0.10);
   --color-grafana-border: rgba(234, 88, 12, 0.34);
 
-  /* Status — bumped one step darker for AA on white */
-  --color-success:       #059669;   /* green-600 */
+  /* Status — one step darker for AA on light surfaces */
+  --color-success:       #059669;
   --color-success-bg:    rgba(5, 150, 105, 0.10);
-  --color-warning:       #b45309;   /* amber-700 — yellow on white is rough */
+  --color-warning:       #b45309;
   --color-warning-bg:    rgba(180, 83, 9, 0.10);
-  --color-danger:        #dc2626;   /* red-600 */
-  --color-danger-bg:     rgba(220, 38, 38, 0.10);
-  --color-info:          #2563eb;   /* blue-600 */
-  --color-info-bg:       rgba(37, 99, 235, 0.10);
+  --color-danger:        #b91c1c;
+  --color-danger-bg:     rgba(185, 28, 28, 0.10);
+  --color-info:          #1d4ed8;
+  --color-info-bg:       rgba(29, 78, 216, 0.10);
 }
 
 :root {
@@ -160,22 +194,21 @@ html, body, #root {
 }
 
 /* Subtle background ambience — radial wash from upper-left, fades out.
-   The two-source wash gives the canvas implied depth without
-   distracting from cards on top. Light theme uses much lighter
-   wash colours so the page reads as "soft white" not "tinted". */
+   Matches the Signal direction "halo": teal from the upper-right + sky
+   from the lower-left. Gives the canvas implied depth without
+   distracting from cards on top. */
 body {
   background:
-    radial-gradient(1100px 700px at 10% -10%, rgba(167, 139, 250, 0.06), transparent 60%),
-    radial-gradient(900px 500px at 110% 20%, rgba(96, 165, 250, 0.05), transparent 55%),
+    radial-gradient(900px 600px at 80% -10%, rgba(45, 212, 191, 0.10), transparent 60%),
+    radial-gradient(900px 600px at 10% 100%, rgba(125, 211, 252, 0.08), transparent 60%),
     var(--color-canvas);
   background-attachment: fixed;
-  /* Improve text rendering on retina displays */
   text-rendering: optimizeLegibility;
 }
 [data-theme="light"] body {
   background:
-    radial-gradient(1100px 700px at 10% -10%, rgba(124, 58, 237, 0.045), transparent 60%),
-    radial-gradient(900px 500px at 110% 20%, rgba(37, 99, 235, 0.035), transparent 55%),
+    radial-gradient(900px 600px at 80% -10%, rgba(15, 118, 110, 0.10), transparent 60%),
+    radial-gradient(900px 600px at 10% 100%, rgba(7, 89, 133, 0.07), transparent 60%),
     var(--color-canvas);
   background-attachment: fixed;
 }

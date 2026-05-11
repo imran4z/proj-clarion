@@ -12,8 +12,12 @@
  * job of broadcasting customer-shaped telemetry into Grafana Cloud.
  *
  * Set `monochrome` when you want the mark to inherit the surrounding
- * text colour (e.g. inside a button) — the orange Grafana highlight
- * gets dropped in that mode for a cleaner glyph.
+ * text colour (e.g. inside a button) — the orange highlight gets
+ * dropped in that mode for a cleaner glyph.
+ *
+ * Colour palette (Signal direction):
+ *   - `#2dd4bf` (teal-400)  — origin dot + middle + outer arc
+ *   - `#FF8833` (orange)    — inner-arc highlight (drops in monochrome)
  */
 import { useMemo } from "react";
 
@@ -51,9 +55,9 @@ export function Logo({ size = 24, monochrome = false, className, title }: LogoPr
       {!monochrome && (
         <defs>
           <radialGradient id={id} cx="35%" cy="50%" r="55%">
-            <stop offset="0%"   stopColor="#a78bfa" stopOpacity="0.35" />
-            <stop offset="60%"  stopColor="#a78bfa" stopOpacity="0.05" />
-            <stop offset="100%" stopColor="#a78bfa" stopOpacity="0" />
+            <stop offset="0%"   stopColor="#2dd4bf" stopOpacity="0.35" />
+            <stop offset="60%"  stopColor="#2dd4bf" stopOpacity="0.05" />
+            <stop offset="100%" stopColor="#2dd4bf" stopOpacity="0" />
           </radialGradient>
         </defs>
       )}
@@ -61,7 +65,7 @@ export function Logo({ size = 24, monochrome = false, className, title }: LogoPr
       {/* Origin dot */}
       <circle
         cx="10" cy="16" r="2.4"
-        fill={monochrome ? "currentColor" : "#a78bfa"}
+        fill={monochrome ? "currentColor" : "#2dd4bf"}
       />
       {/* Inner arc — Grafana orange highlight (drops in monochrome mode) */}
       <path
@@ -74,7 +78,7 @@ export function Logo({ size = 24, monochrome = false, className, title }: LogoPr
       {/* Middle arc */}
       <path
         d="M 17 9.2 A 8 8 0 0 1 17 22.8"
-        stroke={monochrome ? "currentColor" : "#a78bfa"}
+        stroke={monochrome ? "currentColor" : "#2dd4bf"}
         strokeWidth="2.2"
         strokeLinecap="round"
         fill="none"
@@ -83,7 +87,7 @@ export function Logo({ size = 24, monochrome = false, className, title }: LogoPr
       {/* Outer arc */}
       <path
         d="M 20.5 5.8 A 12 12 0 0 1 20.5 26.2"
-        stroke={monochrome ? "currentColor" : "#a78bfa"}
+        stroke={monochrome ? "currentColor" : "#2dd4bf"}
         strokeWidth="2.2"
         strokeLinecap="round"
         fill="none"
