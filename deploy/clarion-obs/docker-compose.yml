@@ -1,0 +1,53 @@
+# ============================================================
+# Clarion app self-observability collector (Grafana Alloy).
+#
+# Runs config.alloy: DB query observability (→ Loki) + Postgres infra
+# metrics + host node metrics (→ Mimir), all scoped to env=clarion.
+#
+# Usage:
+#   1. cp .env.example .env  and fill the values (see README).
+#   2. docker compose up -d
+#   3. Open http://localhost:12346 — every component should be Healthy.
+#   4. Grafana Cloud: KG / Asserts → filter env=clarion (service + DB +
+#      host entities) and Connections → Database Observability for the
+#      per-query detail pages.
+#
+# Host-metrics note: on macOS/Windows Docker Desktop the node exporter
+# reads the Docker LinuxKit VM, not the host OS — fine for lighting up a
+# Node entity in dev; run this on the Linux host in prod for real host
+# metrics.
+# ============================================================
+
+services:
+  clarion-obs-alloy:
+    image: grafana/alloy:latest
+    container_name: clarion-obs-alloy
+    restart: unless-stopped
+    env_file:
+      - .env
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12346
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    ports:
+      - "127.0.0.1:12346:12346"   # Alloy debug UI
+    volumes:
+      - ./config.alloy:/etc/alloy/config.alloy:ro
+      - clarion_obs_data:/var/lib/alloy/data
+      # Host metrics (node exporter) — read-only host mounts.
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro,rslave
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # reach host-published Postgres on Linux
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:12346/-/ready || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 4
+      start_period: 10s
+
+volumes:
+  clarion_obs_data:
+    name: clarion-obs-alloy-data

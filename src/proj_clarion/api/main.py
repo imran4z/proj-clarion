@@ -89,6 +89,19 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Trace incoming HTTP requests as http.server spans — per-endpoint RED
+# metrics + the request root that ties /api/* → DB queries → LLM calls
+# together for the Asserts service view and RCA workbench. OpenLIT does
+# NOT instrument FastAPI in this app (verified: no server-kind spans), so
+# wire it explicitly. Uses the global tracer provider that init_telemetry()
+# sets in the lifespan startup, before any request is served.
+try:
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+    FastAPIInstrumentor.instrument_app(app)
+except Exception:  # noqa: BLE001 — instrumentation must never block boot
+    pass
+
 # Local-only CORS. Vite dev server defaults to :5173, `vite preview` to :4173.
 # Reject anything else — this API never legitimately gets cross-origin traffic
 # from outside the dev box.

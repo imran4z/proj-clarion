@@ -33,6 +33,8 @@ dependencies = [
     "fastapi>=0.136.1",
     "uvicorn[standard]>=0.46.0",
     "sse-starlette>=3.4.2",
+    "opentelemetry-instrumentation-system-metrics>=0.62b1",
+    "opentelemetry-instrumentation-fastapi>=0.62b1",
 ]
 
 [project.optional-dependencies]

@@ -1,0 +1,114 @@
+// ============================================================
+// Clarion app — full self-observability collector (Grafana Alloy)
+//
+// Monitors the CLARION APP'S OWN stack (not the synthetic demo data it
+// generates) and ships it to Grafana Cloud under env = clarion, so the
+// Knowledge Graph / Asserts lights up with Clarion's service + database
+// + host entities and the RCA workbench can correlate them.
+//
+// Three signals, one collector:
+//   1. database_observability.postgres  → Loki  (per-query detail pages
+//      in GC Database Observability — fixes "queries with no instance")
+//   2. prometheus.exporter.postgres      → Mimir (Postgres as a DataStore
+//      entity in Asserts: pg_up, connections, locks, replication)
+//   3. prometheus.exporter.unix          → Mimir (the host as a Node
+//      entity: CPU / memory / disk / network)
+//
+// The FastAPI app + agents push their OWN traces/metrics directly via
+// OTLP (see src/proj_clarion/observability) at env=clarion — this
+// collector adds the infra + DB layers the app process can't emit itself.
+//
+// CONFIG IS SECRET-FREE: every endpoint/credential comes from env() so
+// nothing is hardcoded. Set the vars in deploy/clarion-obs/.env (see the
+// README) — the docker-compose passes them through. asserts_env=clarion
+// is the one value you'll type into the KG env filter.
+// ============================================================
+
+logging {
+    level  = "info"
+    format = "logfmt"
+}
+
+// ── Grafana Cloud destinations ───────────────────────────────
+// Find the push URLs + usernames under Grafana Cloud → Connections →
+// (Prometheus / Loki) → "Send Metrics" / "Send Logs". The token is a
+// Cloud Access Policy token with metrics:write + logs:write scope
+// (the same GRAFANA_CLOUD_API_TOKEN the app already uses works if its
+// policy has both scopes).
+
+prometheus.remote_write "gc" {
+    endpoint {
+        url = env("GRAFANA_CLOUD_PROM_URL")  // .../api/prom/push
+        basic_auth {
+            username = env("GRAFANA_CLOUD_PROM_USERNAME")  // numeric instance id
+            password = env("GRAFANA_CLOUD_API_TOKEN")
+        }
+    }
+    // These promote to Asserts labels → this is the env=clarion slice.
+    external_labels = {
+        asserts_env  = "clarion",
+        asserts_site = "demo",
+        cluster      = "clarion",
+    }
+}
+
+loki.write "gc" {
+    endpoint {
+        url = env("GRAFANA_CLOUD_LOKI_URL")  // .../loki/api/v1/push
+        basic_auth {
+            username = env("GRAFANA_CLOUD_LOKI_USERNAME")  // numeric instance id
+            password = env("GRAFANA_CLOUD_API_TOKEN")
+        }
+    }
+    external_labels = {
+        env     = "clarion",
+        cluster = "clarion",
+    }
+}
+
+// ── 1. Per-query DB observability (detail pages) ─────────────
+// Streams pg_stat_statements samples + schema + EXPLAIN plans to Loki.
+// EVERY query the DB executes is captured here with the instance label,
+// which is what gives each query a clickable detail page in GC. (The
+// instance-less rows you saw are APM db-client spans, a separate surface;
+// this collector is the authoritative source for query details.)
+//
+// DSN must reach Postgres DIRECTLY (no PgBouncer) as the least-privilege
+// grafana_dbo11y role created by ../db-observability/init-monitoring-user.sql.
+
+database_observability.postgres "clarion_pg" {
+    data_source_name = env("CLARION_DBO11Y_DSN")
+    forward_to       = [loki.write.gc.receiver]
+}
+
+// ── 2. Postgres infra metrics (DataStore entity in Asserts) ──
+// The integrations/postgres_exporter job name + standard pg_* metrics are
+// what Asserts' built-in entity rules key off to draw the Postgres node.
+
+prometheus.exporter.postgres "clarion_pg" {
+    data_source_names = [env("CLARION_DBO11Y_DSN")]
+}
+
+prometheus.scrape "clarion_pg" {
+    targets         = prometheus.exporter.postgres.clarion_pg.targets
+    forward_to      = [prometheus.remote_write.gc.receiver]
+    job_name        = "integrations/postgres_exporter"
+    scrape_interval = "30s"
+}
+
+// ── 3. Host infra metrics (Node entity in Asserts) ──────────
+// node/unix exporter — CPU, memory, disk, filesystem, network for the
+// host Clarion runs on. Mount host /proc + /sys read-only (see compose).
+
+prometheus.exporter.unix "host" {
+    rootfs_path = "/host/root"
+    procfs_path = "/host/proc"
+    sysfs_path  = "/host/sys"
+}
+
+prometheus.scrape "host" {
+    targets         = prometheus.exporter.unix.host.targets
+    forward_to      = [prometheus.remote_write.gc.receiver]
+    job_name        = "integrations/node_exporter"
+    scrape_interval = "30s"
+}

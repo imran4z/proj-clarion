@@ -135,6 +135,28 @@ def init_telemetry() -> bool:
         )
     metrics.set_meter_provider(meter_provider)
 
+    # --- Process / runtime metrics ---
+    # Emits process.runtime.* (CPU, memory, GC, threads) for THIS process so
+    # the Clarion app shows up as runtime/infrastructure in Asserts (under
+    # env=clarion) alongside its service + DB entities. Host-level system.*
+    # is left to the node_exporter Alloy collector to avoid double-counting.
+    try:
+        from opentelemetry.instrumentation.system_metrics import (
+            SystemMetricsInstrumentor,
+        )
+
+        SystemMetricsInstrumentor(config={
+            "process.runtime.memory": ["rss", "vms"],
+            "process.runtime.cpu.time": ["user", "system"],
+            "process.runtime.gc_count": None,
+            "process.runtime.thread_count": None,
+            "process.runtime.cpu.utilization": None,
+            "process.runtime.context_switches": ["involuntary", "voluntary"],
+        }).instrument()
+        _logger.info("otel.init.system_metrics")
+    except Exception as exc:  # noqa: BLE001 — instrumentation must never break boot
+        _logger.info("otel.init.system_metrics.skip", error=str(exc)[:200])
+
     # --- OpenLIT (auto-instrumentation; layered on top of our providers) ---
     try:
         import openlit
