@@ -344,6 +344,60 @@ def delete_plan(plan_id: str, cleanup_cloud: bool = False) -> dict[str, object]:
     }
 
 
+@router.post("/{plan_id}/cloud/clear")
+def clear_plan_cloud(plan_id: str) -> dict[str, object]:
+    """Remove this plan's Grafana Cloud footprint (dashboards folder +
+    alert rules) but KEEP the Clarion plan in Postgres. The "clean up my
+    tenant without losing the plan" action — runs `proj-clarion provision
+    clear <plan_id> --yes`. Metric/log/trace series age out of retention
+    on their own; this clears the provisioned dashboards + alerts now.
+
+    After this the plan reverts to a not-provisioned state, so the SE can
+    re-provision later from the same plan."""
+    import subprocess
+    from pathlib import Path
+
+    PROJECT_ROOT = Path(__file__).resolve().parents[4]
+
+    with session_scope() as s:
+        full_id = _resolve_plan_id(s, plan_id)
+        if not full_id:
+            raise HTTPException(status_code=404, detail=f"no plan matches {plan_id!r}")
+
+    proc = subprocess.run(
+        ["uv", "run", "python", "-m", "proj_clarion.cli.main",
+         "provision", "clear", full_id, "--yes"],
+        cwd=str(PROJECT_ROOT),
+        capture_output=True, text=True, timeout=30,
+    )
+    ok = proc.returncode == 0
+
+    # If the plan was marked provisioned, drop it back to approved so the
+    # UI no longer claims it's live in Cloud. Best-effort; ignore if the
+    # transition isn't valid from the current state.
+    reverted_to: str | None = None
+    if ok:
+        try:
+            with session_scope() as s:
+                cur = s.execute(
+                    text("SELECT review_state FROM demo_plans WHERE plan_id = :pid"),
+                    {"pid": full_id},
+                ).scalar_one_or_none()
+                if cur == ReviewState.PROVISIONED.value:
+                    PlanRepo().set_review_state(s, full_id, ReviewState.APPROVED_FOR_PROVISION)
+                    reverted_to = ReviewState.APPROVED_FOR_PROVISION.value
+        except Exception:  # noqa: BLE001 — cosmetic state sync, never block cleanup
+            reverted_to = None
+
+    return {
+        "plan_id": full_id,
+        "cleared": ok,
+        "reverted_to": reverted_to,
+        "stdout_tail": proc.stdout.strip().splitlines()[-3:] if proc.stdout else [],
+        "stderr_tail": proc.stderr.strip().splitlines()[-3:] if proc.stderr else [],
+    }
+
+
 @router.post("/{plan_id}/approve")
 def approve_plan(plan_id: str, body: ApproveRequest) -> dict[str, str]:
     """draft → approved_for_provision. Mirrors `proj-clarion plan approve`.

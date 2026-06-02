@@ -301,10 +301,14 @@ def _resolve_build_target(
 
 
 def _exec_run_build(args: dict[str, Any], session: Session) -> dict[str, Any]:
-    """Kick off a FULL build (research → plan → approve → generate →
-    provision → kg-publish) for a company URL. Returns immediately with
-    the pipeline_id; the build runs in the background."""
+    """Kick off a build for a company URL. By default it STOPS AT THE PLAN
+    (research → plan) — nothing is written to Grafana Cloud until the SE
+    reviews + approves the plan, then provisions explicitly. Pass an
+    explicit `stop_after_phase` to override (e.g. 'kg-publish' to go all
+    the way to a live demo in one shot). Returns the pipeline_id; the
+    build runs in the background."""
     from proj_clarion.api.pipeline_registry import start_pipeline
+    from proj_clarion.api.routes.pipelines import _existing_profile_for_host, _norm_host
     from proj_clarion.api.url_input import URLValidationError, normalize_company_url
 
     url = args.get("url")
@@ -315,22 +319,52 @@ def _exec_run_build(args: dict[str, Any], session: Session) -> dict[str, Any]:
     except URLValidationError as exc:
         raise ValueError(f"invalid url: {exc}") from exc
 
+    # Dedup — same hard guard the UI/route enforces, no bypass for the
+    # agent. A build researches, which would mint a SECOND profile for a
+    # company we already have. Block it (the agent should build from the
+    # existing profile instead) unless explicitly told to allow a dup.
+    if not args.get("allow_duplicate"):
+        existing = _existing_profile_for_host(_norm_host(normalized.url))
+        if existing:
+            raise ValueError(
+                f"A profile for {_norm_host(normalized.url)} already exists "
+                f"({existing}). Don't research it again — build from that "
+                f"profile (run_pipeline_phase phase='plan', profile_id="
+                f"'{existing}'), or pass allow_duplicate=true only if the SE "
+                f"explicitly wants a fresh, separate profile."
+            )
+
+    # Governance default: stop at the plan unless the caller explicitly asks
+    # to go further. Keeps the tenant clean — provisioning is gated on an
+    # explicit human approval.
+    stop_after = args.get("stop_after_phase") or "plan"
+
     vpd = args.get("volume_per_day")
     state = start_pipeline(
         normalized.url,
         args.get("company"),
         days=int(args.get("days") or 1),
         volume_per_day=int(vpd) if vpd else None,
-        stop_after_phase=args.get("stop_after_phase"),
+        stop_after_phase=stop_after,
     )
+    gated = stop_after == "plan"
     return {
         "pipeline_id": state.pipeline_id,
         "status":      state.status,
         "url":         state.url,
         "company":     state.company,
-        "stop_after_phase": args.get("stop_after_phase"),
+        "stop_after_phase": stop_after,
         "watch_url":   f"/pipelines/{state.pipeline_id}",
-        "message":     f"Build started for {state.company or state.url}. Watch it live at /pipelines/{state.pipeline_id}.",
+        "message": (
+            f"Build started for {state.company or state.url} — watch it at "
+            f"/pipelines/{state.pipeline_id}. "
+            + (
+                "It stops at the plan (no Cloud changes); review and approve "
+                "it to provision and go live."
+                if gated else
+                f"Running through {stop_after}."
+            )
+        ),
     }
 
 
@@ -369,6 +403,10 @@ def _exec_run_pipeline_phase(args: dict[str, Any], session: Session) -> dict[str
         raise ValueError("phase='research' requires a url (none could be derived)")
 
     vpd = args.get("volume_per_day")
+    # Governance: re-planning (phase='plan') stops at the plan — it doesn't
+    # auto-provision after a re-plan. Downstream phases (generate/provision/
+    # kg-publish) run through, since those ARE the explicit "go live" step.
+    stop_after = args.get("stop_after_phase") or ("plan" if phase == "plan" else None)
     state = start_pipeline_from_phase(
         starting_phase=phase,
         url=url or f"plan://{(plan_id or 'unknown')[:8]}",
@@ -377,6 +415,7 @@ def _exec_run_pipeline_phase(args: dict[str, Any], session: Session) -> dict[str
         profile_id=resolved_profile_id if phase == "plan" else None,
         plan_id=plan_id if phase in ("approve", "generate", "provision", "kg-publish") else None,
         volume_per_day=int(vpd) if vpd else None,
+        stop_after_phase=stop_after,
     )
     return {
         "pipeline_id": state.pipeline_id,
@@ -500,6 +539,104 @@ def _exec_cancel_build(args: dict[str, Any], session: Session) -> dict[str, Any]
         "cancelled":   cancelled,
         "watch_url":   f"/pipelines/{pipeline_id}",
         "message":     message,
+    }
+
+
+# ── Delete / cleanup executors (CRUD + Grafana-Cloud hygiene) ──────
+
+def _exec_delete_build(args: dict[str, Any], session: Session) -> dict[str, Any]:
+    """Hard-delete a build record (cancels it first if still running).
+    Does NOT touch the plan/profile it produced or any Cloud resources."""
+    from proj_clarion.api.pipeline_registry import delete_pipeline
+    pid = args.get("pipeline_id")
+    if not isinstance(pid, str) or not pid:
+        raise ValueError("pipeline_id is required")
+    deleted = delete_pipeline(pid)
+    return {
+        "pipeline_id": pid, "deleted": deleted,
+        "message": f"Build {pid[:8]} {'deleted' if deleted else 'not found'}.",
+    }
+
+
+def _exec_clear_plan_cloud(args: dict[str, Any], session: Session) -> dict[str, Any]:
+    """Remove a plan's Grafana Cloud footprint (dashboards folder + alert
+    rules) but KEEP the Clarion plan — the 'clean my tenant, keep the
+    plan' action."""
+    from proj_clarion.api.routes.plans import clear_plan_cloud as _clear
+    plan_id = args.get("plan_id")
+    if not isinstance(plan_id, str) or not plan_id:
+        raise ValueError("plan_id is required")
+    res = _clear(plan_id)
+    cleared = bool(res.get("cleared"))
+    return {
+        "plan_id": res.get("plan_id"), "cleared": cleared,
+        "message": (
+            f"Cleared Grafana Cloud resources for plan {plan_id[:8]} (plan kept)."
+            if cleared else
+            f"Cloud cleanup for plan {plan_id[:8]} reported an error — check the stack token/scopes."
+        ),
+    }
+
+
+def _exec_delete_plan(args: dict[str, Any], session: Session) -> dict[str, Any]:
+    """Delete a plan from Clarion. With cleanup_cloud (default true) also
+    clears its Grafana Cloud folder + alerts. Cascades KG/events/audit."""
+    from proj_clarion.api.routes.plans import delete_plan as _del
+    plan_id = args.get("plan_id")
+    if not isinstance(plan_id, str) or not plan_id:
+        raise ValueError("plan_id is required")
+    cleanup = args.get("cleanup_cloud")
+    cleanup = True if cleanup is None else bool(cleanup)
+    res = _del(plan_id, cleanup_cloud=cleanup)
+    return {
+        "plan_id": res.get("plan_id"), "deleted": res.get("deleted"),
+        "cloud_cleaned": cleanup,
+        "message": f"Plan {str(res.get('plan_id'))[:8]} deleted"
+                   + (" + Cloud resources cleared." if cleanup else "."),
+    }
+
+
+def _exec_delete_profile(args: dict[str, Any], session: Session) -> dict[str, Any]:
+    """Delete a profile from Clarion. CASCADES to every plan built from it
+    (and, with cleanup_cloud, their Cloud resources)."""
+    from proj_clarion.api.routes.profiles import delete_profile as _del
+    profile_id = args.get("profile_id")
+    if not isinstance(profile_id, str) or not profile_id:
+        raise ValueError("profile_id is required")
+    cleanup = args.get("cleanup_cloud")
+    cleanup = True if cleanup is None else bool(cleanup)
+    res = _del(profile_id, cleanup_cloud=cleanup)
+    return {
+        "profile_id": res.get("profile_id"), "deleted": res.get("deleted"),
+        "cascaded_plans": res.get("cascaded_plans"),
+        "message": f"Profile {profile_id} deleted "
+                   f"({res.get('cascaded_plans')} plan(s) cascaded)"
+                   + (" + Cloud cleared." if cleanup else "."),
+    }
+
+
+def _exec_cleanup_orphan_folders(args: dict[str, Any], session: Session) -> dict[str, Any]:
+    """Remove orphan Grafana Cloud folders (clarion-* folders whose plan is
+    no longer in Clarion). Pass `uids` to restrict to specific folders;
+    omit to clear them all."""
+    from proj_clarion.api.routes.orphans import delete_orphan as _del
+    from proj_clarion.api.routes.orphans import list_orphans as _list
+    only = args.get("uids")
+    folders = _list()
+    targets = [f for f in folders if (not only or f.uid in only)]
+    deleted: list[str] = []
+    for f in targets:
+        try:
+            _del(f.uid)
+            deleted.append(f.uid)
+        except Exception:  # noqa: BLE001 — keep going; report what we removed
+            continue
+    return {
+        "deleted_count": len(deleted), "deleted_uids": deleted,
+        "message": (
+            f"Removed {len(deleted)} orphan Cloud folder(s)."
+            if deleted else "No orphan Cloud folders to remove."
+        ),
     }
 
 
@@ -653,12 +790,19 @@ TOOL_GET_AUDIT_LOG: dict[str, Any] = {
 TOOL_RUN_BUILD: dict[str, Any] = {
     "name": "run_build",
     "description": (
-        "Start a FULL end-to-end build for a company URL: research → plan → "
-        "approve → generate → provision → kg-publish. Use this to create a "
-        "brand-new demo from scratch. Returns a pipeline_id immediately; the "
-        "build runs in the background — tell the SE they can watch it at the "
-        "returned watch_url. Set stop_after_phase='research' to only build the "
-        "profile (no Cloud provisioning)."
+        "Start a build for a company URL. By DEFAULT it stops at the plan "
+        "(research → plan) and writes NOTHING to Grafana Cloud — the SE then "
+        "reviews + approves the plan, and provisioning happens as an explicit "
+        "next step. This is the normal path: build → review → approve → "
+        "provision. Returns a pipeline_id immediately; tell the SE they can "
+        "watch it at the returned watch_url and that it'll stop at a reviewable "
+        "plan. Only set stop_after_phase to go further: 'research' = profile "
+        "only; 'kg-publish' = run all the way to a live demo in one shot (use "
+        "ONLY when the SE explicitly says go live / provision now). If the SE "
+        "only DESCRIBED a customer or picked a scenario (no URL), infer the "
+        "best-fit real company's homepage URL yourself and pass it here — don't "
+        "ask for a URL unless the scenario is too ambiguous to pick a sensible "
+        "representative."
     ),
     "input_schema": {
         "type": "object",
@@ -671,6 +815,10 @@ TOOL_RUN_BUILD: dict[str, Any] = {
                 "type": "string",
                 "enum": list(_VALID_PHASES),
                 "description": "Stop after this phase succeeds. Use 'research' for profile-only.",
+            },
+            "allow_duplicate": {
+                "type": "boolean",
+                "description": "Only set true if the SE explicitly wants a fresh, separate profile for a company that already has one. Otherwise leave unset — the build is blocked when a profile for the host already exists (build from that profile instead).",
             },
         },
         "required": ["url"],
@@ -789,6 +937,90 @@ TOOL_CANCEL_BUILD: dict[str, Any] = {
     },
 }
 
+TOOL_DELETE_BUILD: dict[str, Any] = {
+    "name": "delete_build",
+    "description": (
+        "Hard-delete a build RECORD (cancels it first if still running, then "
+        "removes the row + its logs). Use for a wedged/runaway build that won't "
+        "stop. Does NOT delete the plan/profile it produced or any Grafana Cloud "
+        "resources — use delete_plan / clear_plan_cloud for those."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {"pipeline_id": {"type": "string", "description": "The build's pipeline_id."}},
+        "required": ["pipeline_id"],
+    },
+}
+
+TOOL_CLEAR_PLAN_CLOUD: dict[str, Any] = {
+    "name": "clear_plan_cloud",
+    "description": (
+        "Remove a plan's Grafana Cloud footprint (its dashboards folder + alert "
+        "rules) while KEEPING the Clarion plan. This is the 'clean up my tenant "
+        "but don't lose the plan' action — the plan reverts to not-provisioned "
+        "so it can be re-provisioned later. Use when the SE wants to tidy Cloud "
+        "without deleting Clarion data."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {"plan_id": {"type": "string", "description": "The plan whose Cloud resources to clear."}},
+        "required": ["plan_id"],
+    },
+}
+
+TOOL_DELETE_PLAN: dict[str, Any] = {
+    "name": "delete_plan",
+    "description": (
+        "Delete a plan from Clarion entirely (cascades its KG nodes/edges, "
+        "generated events, audit). By default ALSO clears its Grafana Cloud "
+        "folder + alerts (cleanup_cloud=true) — set false to leave Cloud as-is. "
+        "Destructive; confirm with the SE first."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "plan_id": {"type": "string", "description": "The plan to delete."},
+            "cleanup_cloud": {"type": "boolean", "description": "Also remove the plan's Cloud folder + alerts (default true)."},
+        },
+        "required": ["plan_id"],
+    },
+}
+
+TOOL_DELETE_PROFILE: dict[str, Any] = {
+    "name": "delete_profile",
+    "description": (
+        "Delete a CompanyProfile from Clarion. CASCADES to EVERY plan built from "
+        "it (and, with cleanup_cloud=true, their Cloud resources). Very "
+        "destructive — always confirm with the SE and name how many plans will "
+        "go with it (call list_plans with source_profile_id first if unsure)."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "profile_id": {"type": "string", "description": "The profile to delete."},
+            "cleanup_cloud": {"type": "boolean", "description": "Also clear each cascaded plan's Cloud resources (default true)."},
+        },
+        "required": ["profile_id"],
+    },
+}
+
+TOOL_CLEANUP_ORPHAN_FOLDERS: dict[str, Any] = {
+    "name": "cleanup_orphan_folders",
+    "description": (
+        "Tenant hygiene: remove orphan Grafana Cloud folders — clarion-* folders "
+        "whose plan no longer exists in Clarion (left behind by a delete that "
+        "skipped Cloud cleanup). Omit `uids` to clear all of them; pass `uids` to "
+        "target specific folders."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "uids": {"type": "array", "items": {"type": "string"}, "description": "Optional: only these folder uids. Omit to clear all orphans."},
+        },
+        "required": [],
+    },
+}
+
 
 # ──────────────────────────────────────────────────────────────────
 # Registries
@@ -816,6 +1048,12 @@ TOOLS_MUTATING: list[dict[str, Any]] = [
     TOOL_START_DEMO,
     TOOL_STOP_DEMO,
     TOOL_CANCEL_BUILD,
+    # CRUD + Grafana-Cloud hygiene
+    TOOL_DELETE_BUILD,
+    TOOL_CLEAR_PLAN_CLOUD,
+    TOOL_DELETE_PLAN,
+    TOOL_DELETE_PROFILE,
+    TOOL_CLEANUP_ORPHAN_FOLDERS,
 ]
 
 # The full catalog the global assistant exposes.
@@ -825,11 +1063,15 @@ TOOLS_ALL: list[dict[str, Any]] = [*TOOLS_READONLY, *TOOLS_MUTATING]
 # calls that change state vs. read-only lookups.
 MUTATING_TOOL_NAMES: frozenset[str] = frozenset(t["name"] for t in TOOLS_MUTATING)
 
-# Tools that KICK OFF A BUILD — the expensive, side-effectful ones. When
-# the SE has approval mode on (the default), the assistant pauses for an
-# explicit Approve before running any of these. Everything else (lookups,
-# extend_profile, approve_plan, demo controls, cancel_build) runs freely.
-NEEDS_APPROVAL_TOOL_NAMES: frozenset[str] = frozenset({"run_build", "run_pipeline_phase"})
+# Tools that PAUSE for an explicit human Approve (when approval mode is on,
+# the default): the expensive build kickoffs AND the destructive
+# delete/cloud-teardown actions. Everything else (lookups, extend_profile,
+# approve_plan, demo controls, cancel_build) runs freely.
+NEEDS_APPROVAL_TOOL_NAMES: frozenset[str] = frozenset({
+    "run_build", "run_pipeline_phase",
+    "delete_build", "delete_plan", "delete_profile",
+    "clear_plan_cloud", "cleanup_orphan_folders",
+})
 
 # Executor lookup. Type alias kept loose because the executors all
 # accept (input_dict, session) and return JSON-serializable values.
@@ -854,6 +1096,11 @@ EXECUTORS_MUTATING: dict[str, ToolExecutor] = {
     "start_demo":         _exec_start_demo,
     "stop_demo":          _exec_stop_demo,
     "cancel_build":       _exec_cancel_build,
+    "delete_build":          _exec_delete_build,
+    "clear_plan_cloud":      _exec_clear_plan_cloud,
+    "delete_plan":           _exec_delete_plan,
+    "delete_profile":        _exec_delete_profile,
+    "cleanup_orphan_folders": _exec_cleanup_orphan_folders,
 }
 
 # Full lookup the endpoint dispatches through.

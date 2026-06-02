@@ -16,9 +16,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Sparkles, X, Plus, History as HistoryIcon, Send, Square,
+  X, Plus, History as HistoryIcon, Send, Square,
   Loader2, Check, AlertCircle, Wrench, Hammer, Trash2, ArrowUpRight,
-  Database, MessageSquare, Target, ChevronDown, ShieldCheck, Zap, Play,
+  Database, MessageSquare, Target, ChevronDown, ShieldCheck, Zap, Play, Wand2,
 } from "lucide-react";
 
 import { cn } from "@/lib/cn";
@@ -132,16 +132,28 @@ const EXAMPLE_PROMPTS = [
 // localStorage key for the approval-mode preference.
 const AUTO_APPROVE_KEY = "clarion.autoApprove";
 
-// Build-kicking tools that pause for approval — must match the backend's
+// Tools that pause for approval — must match the backend's
 // NEEDS_APPROVAL_TOOL_NAMES. When the last turn is an assistant turn with
 // one of these unanswered, the conversation is paused awaiting approval.
-const BUILD_TOOL_NAMES = new Set(["run_build", "run_pipeline_phase"]);
+// Includes the build kickoffs AND the destructive delete/cloud-cleanup
+// actions, so a paused delete surfaces an Approve card too.
+const BUILD_TOOL_NAMES = new Set([
+  "run_build", "run_pipeline_phase",
+  "delete_build", "delete_plan", "delete_profile",
+  "clear_plan_cloud", "cleanup_orphan_folders",
+]);
 
 /** Human one-liner for the approval card (mirrors the server's). */
 function approvalMessage(call: AssistantToolCall): string {
   const i = call.input ?? {};
-  if (call.name === "run_build") return `Start a full build for ${(i.url as string) || "this company"}?`;
+  const short = (v: unknown) => String(v ?? "").slice(0, 8);
+  if (call.name === "run_build") return `Start a build for ${(i.url as string) || "this company"}?`;
   if (call.name === "run_pipeline_phase") return `Run the '${(i.phase as string) || "selected"}' build phase?`;
+  if (call.name === "delete_build") return `Delete build ${short(i.pipeline_id)}? (cancels it if running)`;
+  if (call.name === "clear_plan_cloud") return `Remove plan ${short(i.plan_id)}'s Grafana Cloud resources (keep the plan)?`;
+  if (call.name === "delete_plan") return `Delete plan ${short(i.plan_id)} from Clarion (and its Cloud resources)?`;
+  if (call.name === "delete_profile") return `Delete profile ${i.profile_id ?? ""} and every plan built from it?`;
+  if (call.name === "cleanup_orphan_folders") return "Remove orphan Clarion folders from Grafana Cloud?";
   return `Run ${call.name}?`;
 }
 
@@ -285,15 +297,23 @@ export function ClarionAssistant() {
     setInput("");
   }, [ctx.newThreadNonce]);
 
-  // Consume a seed prompt from a page opener.
+  // Consume a seed prompt from a page opener. When the opener asked to
+  // auto-send (e.g. homepage "Build demo" with a description), fire it
+  // immediately and run hands-free; otherwise just prefill the composer.
   useEffect(() => {
     if (ctx.seedPrompt != null) {
-      setInput(ctx.seedPrompt);
+      const seeded = ctx.seedPrompt;
+      const autoSend = ctx.seedAutoSend;
       ctx.consumeSeed();
-      // focus the textarea so the SE can hit send (or edit)
-      queueMicrotask(() => taRef.current?.focus());
+      if (autoSend) {
+        void send(seeded, { autoApprove: true });
+      } else {
+        setInput(seeded);
+        queueMicrotask(() => taRef.current?.focus());
+      }
     }
-  }, [ctx.seedPrompt, ctx]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctx.seedPrompt, ctx.seedAutoSend]);
 
   // Esc closes the drawer.
   useEffect(() => {
@@ -371,7 +391,7 @@ export function ClarionAssistant() {
     };
   }
 
-  async function send(text?: string) {
+  async function send(text?: string, opts?: { autoApprove?: boolean }) {
     const msg = (text ?? input).trim();
     if (!msg || busy || pendingBuild) return;
     setErr(null);
@@ -385,7 +405,7 @@ export function ClarionAssistant() {
         message: msg,
         conversation_id: convId ?? undefined,
         context_scope: effectiveScope,
-        auto_approve: autoApprove,
+        auto_approve: opts?.autoApprove ?? autoApprove,
       },
       streamHandlers(),
     );
@@ -442,12 +462,14 @@ export function ClarionAssistant() {
 
   return (
     <>
-      {/* Mobile-only backdrop. Desktop keeps the page interactive. */}
+      {/* Click-catcher — invisible (no blur, no dim), just an outside-click
+          target that closes the drawer. The page stays fully legible.
+          A faint dim only on mobile, where the drawer is full-width. */}
       <div
         aria-hidden="true"
         onClick={ctx.close}
         className={cn(
-          "fixed inset-0 z-40 bg-black/40 backdrop-blur-sm transition-opacity sm:hidden",
+          "fixed inset-0 z-40 transition-opacity bg-transparent sm:bg-transparent max-sm:bg-black/40",
           ctx.open ? "opacity-100" : "opacity-0 pointer-events-none",
         )}
       />
@@ -462,20 +484,38 @@ export function ClarionAssistant() {
           ctx.open ? "translate-x-0" : "translate-x-full",
         )}
       >
-        {/* Header */}
-        <header className="flex items-center gap-2 px-4 h-14 border-b border-[var(--color-border)] shrink-0">
-          <span className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-[var(--color-accent-bg)] text-[var(--color-accent)]">
-            <Sparkles size={15} />
+        {/* Header — flashy AI lockup: a glowing gradient orb (breathes
+            while working), an animated brand-gradient title, and a live
+            status line. */}
+        <header className="relative isolate flex items-center gap-2.5 px-4 h-[60px] border-b border-[var(--color-border)] shrink-0 overflow-hidden">
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 -z-10 opacity-70"
+            style={{ background: "radial-gradient(130% 150% at 0% 0%, var(--color-accent-bg), transparent 62%)" }}
+          />
+          <span
+            className={cn(
+              "grid place-items-center w-8 h-8 rounded-xl text-[var(--color-on-accent)] shrink-0",
+              busy && "clarion-orb-live",
+            )}
+            style={{ background: "linear-gradient(135deg, var(--color-accent), var(--color-signal))" }}
+          >
+            <Wand2 size={16} />
           </span>
           <div className="flex-1 min-w-0">
-            <div className="text-sm font-semibold text-[var(--color-text)] leading-tight">
-              Clarion Assistant
+            <div className="text-sm font-semibold leading-tight">
+              <span className="clarion-gradient-text">Clarion</span>{" "}
+              <span className="text-[var(--color-text)]">Assistant</span>
             </div>
-            {sLabel && (
-              <div className="text-[11px] text-[var(--color-text-muted)] font-mono truncate">
-                context: {sLabel}
-              </div>
-            )}
+            <div className="text-[11px] font-mono truncate leading-tight mt-0.5">
+              {busy ? (
+                <span className="text-[var(--color-accent)]">working…</span>
+              ) : sLabel ? (
+                <span className="text-[var(--color-text-muted)]">context: {sLabel}</span>
+              ) : (
+                <span className="text-[var(--color-text-faint)]">ready</span>
+              )}
+            </div>
           </div>
           <button
             type="button"
@@ -505,6 +545,13 @@ export function ClarionAssistant() {
             <X size={16} />
           </button>
         </header>
+
+        {/* Streaming progress sweep — a thin indeterminate gradient bar
+            that only shows while a turn is in flight. The headline "it's
+            working" cue. */}
+        <div className="h-[2px] shrink-0 overflow-hidden bg-transparent">
+          {busy && <div className="clarion-sweep h-full w-full" />}
+        </div>
 
         {/* Context switcher — re-aim the assistant at any plan/profile
             without leaving the page. Follows the current page until the
@@ -658,7 +705,7 @@ export function ClarionAssistant() {
               disabled={!!pendingBuild}
               placeholder={
                 pendingBuild
-                  ? "Approve or cancel the pending build above first…"
+                  ? "Approve or cancel the pending action above first…"
                   : "Ask Clarion to build, refine, or explain anything…"
               }
               className="w-full resize-none bg-transparent px-3 py-2.5 pr-12 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-faint)] outline-none disabled:opacity-50"
@@ -724,7 +771,7 @@ function EmptyState({
   return (
     <div className="h-full flex flex-col items-center justify-center text-center px-4 py-8">
       <span className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-[var(--color-accent-bg)] text-[var(--color-accent)] mb-3">
-        <Sparkles size={22} />
+        <Wand2 size={22} />
       </span>
       <h3 className="text-sm font-semibold text-[var(--color-text)] m-0">
         How can I help?
@@ -777,7 +824,7 @@ function ApprovalCard({
     <div className="rounded-xl border border-[color:var(--color-warning)]/40 bg-[var(--color-warning-bg)] p-3 space-y-2">
       <div className="flex items-center gap-2 text-xs font-medium text-[var(--color-text)]">
         <ShieldCheck size={14} className="text-[var(--color-warning)]" />
-        Approval needed before this build runs
+        Approval needed before this runs
       </div>
       <p className="text-sm text-[var(--color-text)] m-0">{approvalMessage(call)}</p>
       <div className="text-[11px] font-mono text-[var(--color-text-muted)] truncate">{detail}</div>
@@ -856,11 +903,30 @@ function LiveBubble({ live }: { live: LiveTurn }) {
       {live.calls.map((c) => (
         <ToolChip key={c.tool_use_id} call={c} result={live.results[c.tool_use_id]} />
       ))}
-      {noOutput && (
-        <div className="inline-flex items-center gap-2 text-xs text-[var(--color-text-muted)]">
-          <Loader2 size={13} className="animate-spin" /> Thinking…
-        </div>
-      )}
+      {noOutput && <ThinkingIndicator />}
+    </div>
+  );
+}
+
+/** Animated "the agent is thinking" cue — a small gradient orb + three
+ *  staggered pulsing dots. Reads as alive, not a static spinner. */
+function ThinkingIndicator() {
+  return (
+    <div className="inline-flex items-center gap-2.5 rounded-full border border-[var(--color-accent-border)] bg-[var(--color-accent-bg)]/50 px-3 py-1.5">
+      <span
+        className="clarion-orb-live grid place-items-center w-4 h-4 rounded-full"
+        style={{ background: "linear-gradient(135deg, var(--color-accent), var(--color-signal))" }}
+      />
+      <span className="text-xs text-[var(--color-text-muted)]">Thinking</span>
+      <span className="flex items-center gap-1">
+        {[0, 1, 2].map((i) => (
+          <span
+            key={i}
+            className="clarion-thinking-dot inline-block w-1.5 h-1.5 rounded-full bg-[var(--color-accent)]"
+            style={{ animationDelay: `${i * 0.16}s` }}
+          />
+        ))}
+      </span>
     </div>
   );
 }

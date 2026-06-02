@@ -390,6 +390,7 @@ async def run_demo_pipeline(
     plan_id: str | None = None,
     volume_per_day: int | None = None,
     pipeline_id: str | None = None,
+    emit_reused_phases: bool = True,
 ) -> AsyncIterator[dict[str, Any]]:
     """The whole flow, or any tail of it.
 
@@ -437,7 +438,12 @@ async def run_demo_pipeline(
 
     # Input validation — fail fast with a clear error rather than crashing
     # mid-phase with a None-deref.
-    if start_idx >= _phase_idx("plan") and profile_path is None:
+    # profile_path is consumed ONLY by the plan phase. Require it just when
+    # we're *starting* at plan (a plan-only resume); a full run derives it
+    # from research, and approve/generate/provision/kg-publish never touch
+    # it. (Previously this required it for every phase >= plan, which made
+    # resuming at "approve" crash with "requires profile_path or profile_id".)
+    if start_idx == _phase_idx("plan") and profile_path is None:
         raise ValueError(
             f"starting_phase={starting_phase!r} requires profile_path or profile_id"
         )
@@ -459,19 +465,24 @@ async def run_demo_pipeline(
     # so the UI renders them as green-check completed instead of muted
     # "skipped" rows. Phases beyond start_idx stay pending until they
     # run for real.
+    # When continuing the SAME pipeline in place (resume-in-place), the
+    # prior phases' real `done` events are already on this pipeline's event
+    # stream, so re-emitting them would duplicate (and overwrite their
+    # messages). Only replay them for a fresh from-phase pipeline.
     now_iso = datetime.now(timezone.utc).isoformat()
-    for i, ph in enumerate(PIPELINE_PHASES):
-        if i < start_idx:
-            ev: dict[str, Any] = {
-                "event": "phase", "phase": ph, "status": "done",
-                "message": "Reused from a prior build",
-                "started_at": now_iso, "finished_at": now_iso,
-            }
-            if ph == "research" and profile_id:
-                ev["profile_id"] = profile_id
-            if ph == "plan" and plan_id:
-                ev["plan_id"] = plan_id
-            yield ev
+    if emit_reused_phases:
+        for i, ph in enumerate(PIPELINE_PHASES):
+            if i < start_idx:
+                ev: dict[str, Any] = {
+                    "event": "phase", "phase": ph, "status": "done",
+                    "message": "Reused from a prior build",
+                    "started_at": now_iso, "finished_at": now_iso,
+                }
+                if ph == "research" and profile_id:
+                    ev["profile_id"] = profile_id
+                if ph == "plan" and plan_id:
+                    ev["plan_id"] = plan_id
+                yield ev
 
     active_phase: str | None = None  # most recent phase to emit "started"
 

@@ -9,6 +9,7 @@ import { Boxes, Database, Eye, Activity, Rocket } from "lucide-react";
 
 import { Card } from "@/components/Card";
 import { Badge } from "@/components/Badge";
+import { PageHeader } from "@/components/PageHeader";
 
 export function DocsPage() {
   return (
@@ -30,15 +31,12 @@ export function DocsPage() {
 
 function Header() {
   return (
-    <div>
-      <div className="text-[11px] font-mono uppercase tracking-[0.08em] text-[var(--color-text-faint)]">
-        Docs · AI Observability
-      </div>
-      <h1 className="mt-1 text-[32px] font-medium tracking-tight leading-tight">
-        Instrument your Claude app for{" "}
-        <span className="h1-display">Grafana Cloud AI Obs</span>.
-      </h1>
-      <p className="mt-3 text-[var(--color-text-muted)] text-[15px] leading-relaxed max-w-3xl">
+    <PageHeader
+      eyebrow="Docs · AI Observability"
+      title="Instrument your Claude app for"
+      em="Grafana Cloud AI Obs."
+      lede={
+        <>
         Seven steps. Every Anthropic call ends up as a <code className="font-mono text-[13px]">gen_ai.chat</code>{" "}
         span in Tempo with cost, cache savings, TTFT, and pipeline context.
         Auto-detected guardrail trips (cost spikes, runaway output, prompt
@@ -58,8 +56,9 @@ function Header() {
         <code className="font-mono text-[12px]">tools.py</code>,{" "}
         <code className="font-mono text-[12px]">health.py</code>{" "}) for the
         reference implementation.
-      </p>
-    </div>
+        </>
+      }
+    />
   );
 }
 

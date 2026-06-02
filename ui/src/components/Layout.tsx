@@ -1,4 +1,4 @@
-import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   ScrollText,
@@ -12,18 +12,18 @@ import {
   X,
   Boxes,
   BookOpen,
-  Bot,
+  Wand2,
+  ChevronDown,
+  FileText,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { cn } from "@/lib/cn";
-import { getEnv, listPipelines } from "@/lib/api";
+import { listPipelines, type PipelineSummary } from "@/lib/api";
 import { CommandPalette } from "@/components/CommandPalette";
 import { ClarionAssistant } from "@/components/ClarionAssistant";
-import { Logo } from "@/components/Logo";
-import { PipelineStatusPill } from "@/components/PipelineStatusPill";
+import { ClarionMark } from "@/components/icons/ClarionIcons";
 import { UserMenu } from "@/components/UserMenu";
-import { usePipeline } from "@/lib/PipelineContext";
 import { useAssistant } from "@/lib/AssistantContext";
 
 // Primary nav: the surfaces an SE hits during a live demo. The home
@@ -43,7 +43,13 @@ const NAV = [
 // "Pipelines" used to live here but was dropped: the "Build" primary
 // nav now goes to /new which is the builds list (consolidation per
 // CDD). /pipelines stays as a backward-compat route in App.tsx.
+// The leadership one-pager is internal-only and git-ignored (see App.tsx).
+// Only surface the nav entry when the file is actually present, so a clean
+// checkout without it doesn't show a dead link.
+const hasOnePager = Object.keys(import.meta.glob("../pages/OnePager.tsx")).length > 0;
+
 export const SECONDARY_NAV = [
+  ...(hasOnePager ? [{ to: "/one-pager", label: "One-pager", icon: FileText }] : []),
   { to: "/runs",  label: "Runs",  icon: Activity },
   { to: "/audit", label: "Audit", icon: History  },
   // /about explains the project + arch + observability surfaces; useful
@@ -162,7 +168,7 @@ function MobileNavDrawer({
         <div className="flex items-center justify-between p-4 border-b border-[var(--color-border)]">
           <Link to="/" className="flex items-center gap-2.5 font-semibold">
             <span className="brand-tile inline-flex items-center justify-center w-8 h-8 rounded-[8px]" aria-hidden="true">
-              <Logo size={18} />
+              <ClarionMark size={18} />
             </span>
             <span>Proj-Clarion</span>
           </Link>
@@ -221,62 +227,100 @@ function MobileNavDrawer({
   );
 }
 
-/** Topbar live cluster, the headline `PipelineStatusPill` for the
- *  followed pipeline, plus a small "+N more" sibling when other builds
- *  are running in parallel (SE queued multiple) so they're discoverable
- *  without polling /pipelines manually.
- *
- *  Layered structure on purpose: the pill is the prominent "what's
- *  happening right now" cue; the +N is a compact pointer to the list
- *  view. When there's no followed pipeline at all but builds ARE running
- *  (the SE just refreshed and the context hasn't latched yet), we fall
- *  back to a single "N builds running" link to /pipelines.
- */
+/** Topbar live cluster — shows what's building right now.
+ *  One running build → a single live pill (host · phase n/6) linking to
+ *  its view. Multiple → a "N builds" pill that opens a dropdown listing
+ *  each one (host · phase · spinner), so parallel builds are legible at
+ *  a glance and one click away. Hidden when nothing is running. */
 function PipelineLiveCluster() {
-  const p = usePipeline();
-  // Cheap poll, bounded list size, only used to count running builds.
+  const navigate = useNavigate();
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
   const all = useQuery({
     queryKey: ["pipelines"],
     queryFn: listPipelines,
     refetchInterval: 5_000,
   });
-  const runningCount = (all.data ?? []).filter((x) => x.status === "running").length;
+  const running = (all.data ?? []).filter((x) => x.status === "running");
 
-  const followsActive = p.status !== "idle" && !!p.pipelineId;
-  if (!followsActive && runningCount === 0) return null;
+  useEffect(() => {
+    function h(e: MouseEvent) { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); }
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
 
-  if (!followsActive) {
-    // Multiple builds running but we're not actively following any, show
-    // a generic "N builds running" pill that links to /pipelines history.
+  if (running.length === 0) return null;
+
+  function go(b: PipelineSummary) {
+    setOpen(false);
+    navigate(`/pipelines/${b.pipeline_id}`);
+  }
+
+  // Single build → a compact live pill straight to its view.
+  if (running.length === 1) {
+    const b = running[0];
     return (
-      <Link
-        to="/pipelines"
-        title={`${runningCount} pipeline${runningCount === 1 ? "" : "s"} running, click to view list`}
-        className="flex items-center gap-2 px-2.5 h-7 rounded-full border text-xs transition-colors border-[color:var(--color-info)]/40 text-[var(--color-info)] bg-[var(--color-info-bg)]"
+      <button
+        type="button"
+        onClick={() => go(b)}
+        title="Open the live build"
+        className="flex items-center gap-2 px-2.5 h-7 rounded-full border text-xs transition-colors border-[color:var(--color-accent-border)] text-[var(--color-accent)] bg-[var(--color-accent-bg)] hover:bg-[color:var(--color-accent-bg)]/80"
       >
         <Loader2 size={12} className="animate-spin" />
-        <span className="font-medium">{runningCount} build{runningCount === 1 ? "" : "s"} running</span>
-      </Link>
+        <span className="font-medium max-w-[140px] truncate">{buildHost(b)}</span>
+        <span className="font-mono text-[10px] opacity-80">{buildPhase(b)}</span>
+      </button>
     );
   }
 
-  // Followed pipeline → the new v2 pill. "+N more" sibling appears only
-  // when there are MORE running builds than just the one we're following.
-  const otherRunning = Math.max(0, runningCount - (p.status === "running" ? 1 : 0));
+  // Multiple builds → a count pill that opens a status dropdown.
   return (
-    <div className="flex items-center gap-1.5">
-      <PipelineStatusPill />
-      {otherRunning > 0 && (
-        <Link
-          to="/pipelines"
-          className="px-1.5 h-5 inline-flex items-center rounded-full bg-[var(--color-info-bg)] text-[var(--color-info)] text-[10px] font-mono"
-          title={`${otherRunning} additional build${otherRunning === 1 ? "" : "s"} running, open Pipelines to switch context`}
-        >
-          +{otherRunning}
-        </Link>
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        title="Builds in progress"
+        className="flex items-center gap-2 px-2.5 h-7 rounded-full border text-xs transition-colors border-[color:var(--color-accent-border)] text-[var(--color-accent)] bg-[var(--color-accent-bg)] hover:bg-[color:var(--color-accent-bg)]/80"
+      >
+        <Loader2 size={12} className="animate-spin" />
+        <span className="font-medium">{running.length} builds</span>
+        <ChevronDown size={12} className={cn("transition-transform", open && "rotate-180")} />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-9 z-50 w-72 rounded-xl border border-[var(--color-border-strong)] bg-[var(--color-canvas-elev2)] p-1 shadow-[var(--shadow-lg)]">
+          <div className="px-3 py-2 text-[10px] font-mono uppercase tracking-[0.08em] text-[var(--color-text-faint)]">
+            {running.length} builds in progress
+          </div>
+          {running.map((b) => (
+            <button
+              key={b.pipeline_id}
+              type="button"
+              onClick={() => go(b)}
+              className="hover-wash flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left"
+            >
+              <Loader2 size={13} className="shrink-0 animate-spin text-[var(--color-accent)]" />
+              <div className="min-w-0 flex-1">
+                <div className="text-[13px] font-medium text-[var(--color-text)] truncate">{buildHost(b)}</div>
+                <div className="font-mono text-[10px] text-[var(--color-text-faint)]">{buildPhase(b)}</div>
+              </div>
+              <Activity size={13} className="shrink-0 text-[var(--color-text-faint)]" />
+            </button>
+          ))}
+        </div>
       )}
     </div>
   );
+}
+
+function buildHost(b: PipelineSummary): string {
+  if (b.company) return b.company;
+  try { return new URL(b.url).host.replace(/^www\./, ""); }
+  catch { return b.url; }
+}
+function buildPhase(b: PipelineSummary): string {
+  const done = b.phases_done ?? 0;
+  return `${b.current_phase ?? "running"} · ${done}/6`;
 }
 
 function TopBar({
@@ -287,12 +331,6 @@ function TopBar({
 }) {
   const location = useLocation();
   const assistant = useAssistant();
-  const env = useQuery({ queryKey: ["env"], queryFn: getEnv, refetchInterval: 30_000 });
-  const mode = env.data?.mode ?? "…";
-  const modeColor =
-    mode === "alloy" ? "text-[var(--color-accent)]" :
-    mode === "cloud-direct" ? "text-[var(--color-info)]" :
-    "text-[var(--color-text-faint)]";
 
   return (
     <header
@@ -309,11 +347,8 @@ function TopBar({
         >
           <Menu size={18} aria-hidden="true" />
         </button>
-        {/* Brand cluster, accent-tinted tile wraps the Logo, wordmark
-            sits to its right, then a small 2-line mono "SE / CONSOLE"
-            pill beside the wordmark (per v2 mockup). The pill is a
-            typographic mark, not a link, purely identifying this as
-            the SE-facing surface. */}
+        {/* Brand cluster — accent-tinted tile wraps the Clarion mark, with
+            the wordmark to its right. */}
         <Link
           to="/"
           className="flex items-center gap-3 rounded-md -mx-1 px-1 py-1 hover:bg-white/[0.03] transition-colors"
@@ -323,13 +358,10 @@ function TopBar({
             className="brand-tile inline-flex items-center justify-center w-9 h-9 rounded-[10px]"
             aria-hidden="true"
           >
-            <Logo size={22} />
+            <ClarionMark size={22} />
           </span>
           <span className="text-[16px] font-semibold tracking-tight text-[var(--color-text)]">
             Proj-Clarion
-          </span>
-          <span className="brand-tag hidden sm:inline-flex" aria-hidden="true">
-            SE Console
           </span>
         </Link>
         {/* Primary nav, hidden on mobile (replaced by overflow menu in
@@ -360,17 +392,6 @@ function TopBar({
         </nav>
         <div className="ml-auto flex items-center gap-2 sm:gap-3 text-xs text-[var(--color-text-muted)]">
           <PipelineLiveCluster />
-          {/* Mode chip, inline label paired with a mono value, mirroring
-              how Grafana panels render unit/value pairs. The accent
-              token cascades through the value so an `alloy`-mode Clarion
-              reads as "primary" even at a glance. */}
-          <span
-            className="hidden lg:inline-flex items-center gap-1.5 h-7 px-2 rounded-md border border-[var(--color-border)] bg-[var(--color-canvas-elev1)]/60"
-            title={`Build mode: ${mode}`}
-          >
-            <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">mode</span>
-            <span className={cn("font-mono text-[11px]", modeColor)}>{mode}</span>
-          </span>
           <button
             onClick={onOpenPalette}
             aria-label="Open command palette"
@@ -410,7 +431,7 @@ function TopBar({
                 : "border border-[var(--color-border)] bg-[var(--color-canvas-elev1)]/70 text-[var(--color-text-muted)] hover:bg-[var(--color-canvas-elev2)] hover:border-[var(--color-border-strong)] focus-visible:border-[color:var(--color-accent-border)]",
             )}
           >
-            <Bot
+            <Wand2
               size={14}
               aria-hidden="true"
               className={assistant.open ? "text-[var(--color-accent)]" : "text-[var(--color-text-faint)]"}

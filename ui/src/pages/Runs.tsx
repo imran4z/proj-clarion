@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
-import { Square, AlertCircle, CheckCircle2, Loader2, X } from "lucide-react";
+import { Square, AlertCircle, CheckCircle2, Loader2, X, Terminal, Play } from "lucide-react";
 
 import { listRuns, streamRun, cancelRun, type RunSummary } from "@/lib/api";
 import { Card } from "@/components/Card";
@@ -10,6 +10,8 @@ import { Button } from "@/components/Button";
 import { LogView } from "@/components/LogView";
 import { Pagination } from "@/components/Pagination";
 import { RunKpiCard } from "@/components/RunKpiCard";
+import { PageHeader } from "@/components/PageHeader";
+import { StatKpi } from "@/components/StatKpi";
 import { cn } from "@/lib/cn";
 
 export function RunsPage() {
@@ -34,21 +36,35 @@ export function RunsPage() {
   const safePage = Math.min(page, totalPages);
   const pageRows = ordered.slice((safePage - 1) * pageSize, safePage * pageSize);
 
+  // Status rollup for the summary KPI row.
+  const summary = useMemo(() => {
+    let running = 0;
+    let done = 0;
+    let failed = 0;
+    for (const r of ordered) {
+      if (!r.finished) running++;
+      else if (r.return_code === 0) done++;
+      else failed++;
+    }
+    return { running, done, failed };
+  }, [ordered]);
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Runs</h1>
-        <p className="text-[var(--color-text-muted)] mt-1 text-sm max-w-3xl">
-          A <strong>run</strong> is a single CLI subprocess invoked from this UI:
-          one of <code className="font-mono">generate</code>, <code className="font-mono">provision</code>,
-          {" "}<code className="font-mono">kg-publish</code>, or <code className="font-mono">live-tail</code>.
-          Each one shells out to <code className="font-mono">proj-clarion</code> just like
-          you'd run from a terminal, same arguments, same logs.{" "}
-          <span className="text-[var(--color-text-faint)] tabular-nums">
-            {ordered.length} total
-          </span>
-        </p>
-      </div>
+      <PageHeader
+        eyebrow="Runs"
+        title="Emitter & runner tasks."
+        lede="Every CLI subprocess invoked from this UI — generate, provision, kg-publish, live-tail. Each shells out to proj-clarion with the same arguments and logs you'd get from a terminal."
+      />
+
+      {ordered.length > 0 && (
+        <div className="grid gap-3 grid-cols-2 lg:grid-cols-4">
+          <StatKpi label="Runs" value={ordered.length} hint="this session" icon={Terminal} tone="accent" />
+          <StatKpi label="Running" value={summary.running} hint="in flight" icon={Play} tone="live" />
+          <StatKpi label="Done" value={summary.done} hint="exit 0" icon={CheckCircle2} tone="success" />
+          <StatKpi label="Failed" value={summary.failed} hint="non-zero exit" icon={AlertCircle} tone="danger" />
+        </div>
+      )}
 
       {ordered.length === 0 ? (
         <Card>

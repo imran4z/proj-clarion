@@ -1,11 +1,21 @@
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { type ComponentType } from "react";
 
 import { Layout } from "@/components/Layout";
 import { SetupGate } from "@/components/SetupGate";
 import { ToastProvider } from "@/components/Toast";
 import { AboutPage } from "@/pages/About";
 import { DocsPage } from "@/pages/Docs";
+
+// The leadership one-pager is internal-only and git-ignored. Load it
+// optionally: present locally → route mounts; absent on a clean checkout →
+// the glob is empty and the build still succeeds.
+const onePagerMods = import.meta.glob("./pages/OnePager.tsx", { eager: true }) as Record<
+  string,
+  { OnePagerPage?: ComponentType }
+>;
+const OnePagerPage = Object.values(onePagerMods)[0]?.OnePagerPage;
 import { AuditPage } from "@/pages/Audit";
 import { DashboardPage } from "@/pages/Dashboard";
 import { ProfilesListPage, ProfileDetailPage } from "@/pages/Profiles";
@@ -71,6 +81,7 @@ export default function App() {
                     <Route path="/pipelines/:pipelineId" element={<PipelineRedirect />} />
                     <Route path="/audit" element={<AuditPage />} />
                     <Route path="/about" element={<AboutPage />} />
+                    {OnePagerPage && <Route path="/one-pager" element={<OnePagerPage />} />}
                     <Route path="/docs/ai-obs" element={<DocsPage />} />
                     {/* Legacy alias, keep so bookmarks to /demos still work. */}
                     <Route path="/demos" element={<AuditPage />} />

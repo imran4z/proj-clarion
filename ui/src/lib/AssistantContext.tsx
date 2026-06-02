@@ -29,6 +29,11 @@ interface OpenOptions {
   seedPrompt?: string;
   /** Force a brand-new conversation instead of resuming the last one. */
   newThread?: boolean;
+  /** Send the seed immediately (don't wait for the SE to hit enter) and
+   *  run any resulting build hands-free (no approval pause). Used by the
+   *  homepage "Build demo" when a description needs the agent to resolve
+   *  a URL — the SE asked, so it should just go. */
+  autoSend?: boolean;
 }
 
 interface AssistantContextValue {
@@ -37,6 +42,9 @@ interface AssistantContextValue {
   scope: AssistantContextScope | null;
   /** Compose-box seed requested by a page; cleared once consumed. */
   seedPrompt: string | null;
+  /** When true, the drawer should auto-send the seed (and auto-approve the
+   *  build it triggers) instead of just prefilling the composer. */
+  seedAutoSend: boolean;
   /** Increments whenever a page requests a fresh thread — the drawer
    *  watches this to reset its active conversation. */
   newThreadNonce: number;
@@ -53,22 +61,24 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const [scope, setScope] = useState<AssistantContextScope | null>(null);
   const [seedPrompt, setSeedPrompt] = useState<string | null>(null);
+  const [seedAutoSend, setSeedAutoSend] = useState(false);
   const [newThreadNonce, setNewThreadNonce] = useState(0);
 
   const openAssistant = useCallback((opts?: OpenOptions) => {
     setScope(opts?.scope ?? null);
     if (opts?.seedPrompt !== undefined) setSeedPrompt(opts.seedPrompt);
+    setSeedAutoSend(!!opts?.autoSend);
     if (opts?.newThread) setNewThreadNonce((n) => n + 1);
     setOpen(true);
   }, []);
 
   const close = useCallback(() => setOpen(false), []);
   const toggle = useCallback(() => setOpen((v) => !v), []);
-  const consumeSeed = useCallback(() => setSeedPrompt(null), []);
+  const consumeSeed = useCallback(() => { setSeedPrompt(null); setSeedAutoSend(false); }, []);
 
   const value = useMemo<AssistantContextValue>(
-    () => ({ open, scope, seedPrompt, newThreadNonce, openAssistant, close, toggle, consumeSeed }),
-    [open, scope, seedPrompt, newThreadNonce, openAssistant, close, toggle, consumeSeed],
+    () => ({ open, scope, seedPrompt, seedAutoSend, newThreadNonce, openAssistant, close, toggle, consumeSeed }),
+    [open, scope, seedPrompt, seedAutoSend, newThreadNonce, openAssistant, close, toggle, consumeSeed],
   );
 
   return <AssistantCtx.Provider value={value}>{children}</AssistantCtx.Provider>;

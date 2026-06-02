@@ -140,7 +140,7 @@ export function ProfileKpiCard({ profile, plans, onClick, compact = false }: Pro
         "group relative isolate text-left rounded-xl border overflow-hidden",
         "bg-[var(--color-canvas-elev1)] border-[var(--color-border)]",
         "flex flex-col shadow-[var(--shadow-sm)]",
-        compact ? "p-4 min-h-[112px]" : "p-5 min-h-[164px]",
+        compact ? "p-4 min-h-[112px]" : "p-5",
         "transition-[transform,box-shadow,border-color] duration-150 ease-out",
         "hover:-translate-y-px hover:border-[var(--color-border-strong)] hover:shadow-[var(--shadow-md)]",
         "focus-visible:outline-none focus-visible:border-[var(--card-accent)] focus-visible:ring-2 focus-visible:ring-[var(--card-accent)]/40",

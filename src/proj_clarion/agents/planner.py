@@ -877,22 +877,21 @@ async def build_kg(state: PlanState) -> PlanState:
         process_gens = state.get("gen_ids_processes", [])
         parents = [g for g in [analyze_gen, *process_gens] if g]
         try:
-            # max_tokens lands on 20000 by trial: 16000 truncates ITC/<ERP-vendor>/
-            # Grafana mid-edge-list (~10K tokens of output JSON), and
-            # 32000 trips Anthropic SDK's non-streaming guard rail
-            # (`ValueError: Streaming is required for operations that may
-            # take longer than 10 minutes`). Opus 4.7's threshold is
-            # 21,333 tokens — anything over needs `client.messages.stream()`.
-            # 20000 sits safely below that and gives ~10K headroom over
-            # the JSON sizes we've seen. If a future vertical truncates
-            # at 20K, the right move is converting _llm_json to streaming
-            # rather than pushing the ceiling.
+            # KG JSON is the planner's largest output. Big verticals (banks,
+            # broad retailers) blow past smaller ceilings and truncate
+            # mid-edge-list → "Unterminated string" → no plan. The old
+            # 20000 cap was chosen to stay under Anthropic's non-streaming
+            # 21,333-token guard rail, but `call_anthropic` now ALWAYS uses
+            # `messages.stream()` under the hood (see observability/
+            # llm_client.py), so that guard rail no longer applies. Lifted
+            # to 32000 for ~60% more headroom; raise further if a vertical
+            # still truncates (streaming supports it).
             data, gen_id = _llm_json(
                 BUILD_KG_SYSTEM, user,
                 agent_name="clarion.planner.build_kg",
                 parent_generation_ids=parents,
                 conversation_id=state.get("sigil_conversation_id", ""),
-                max_tokens=20000,
+                max_tokens=32000,
             )
             data = _sanitize_kg_payload(data)
             kg = KnowledgeGraph.model_validate(data)

@@ -58,3 +58,9 @@ ui/.vite/
 *.bak
 *.orig
 *.rej
+
+# Internal-only leadership one-pager (pitch / competitive content) —
+# keep OUT of the public repo. Loaded optionally in App.tsx via import.meta.glob
+# so a clean checkout without these files still builds.
+ui/src/pages/OnePager.tsx
+ui/src/lib/onePager.ts

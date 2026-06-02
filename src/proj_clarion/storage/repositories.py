@@ -576,6 +576,19 @@ class PipelineRepo:
             },
         )
 
+    def reopen(self, session: Session, pipeline_id: str) -> None:
+        """Flip a terminal pipeline back to `running` and clear its
+        finished_at/error so a resume-in-place can append the remaining
+        phases under the SAME pipeline_id (no second build row)."""
+        session.execute(
+            text("""
+                UPDATE pipelines
+                SET status = 'running', finished_at = NULL, error = NULL
+                WHERE pipeline_id = :pid
+            """),
+            {"pid": pipeline_id},
+        )
+
     def set_profile_id(self, session: Session, pipeline_id: str, profile_id: str) -> None:
         session.execute(
             text("UPDATE pipelines SET profile_id = :p WHERE pipeline_id = :pid"),
@@ -646,20 +659,117 @@ class PipelineRepo:
         ]
 
     def reap_orphans(self, session: Session) -> int:
-        """On API startup, any pipelines still in `running` state are
-        orphans (the asyncio task didn't survive the restart). Mark them
-        failed so the UI doesn't show fake spinners forever. Returns the
-        count of reaped rows."""
-        result = session.execute(
-            text("""
+        """On API startup, reap `running` pipelines that have gone idle —
+        the same idle-based rule as the lazy reaper (no live tasks exist at
+        startup). Idle, not "any running", so a build that was genuinely
+        mid-flight at restart isn't instantly failed; it converges only if
+        it's actually stopped emitting. Returns the count reaped."""
+        return self.reap_stale(session, set())
+
+    def reap_stale(
+        self, session: Session, active_ids: set[str], *, idle_minutes: int = 10,
+    ) -> int:
+        """Reap dead/zombie builds WITHOUT touching genuinely-live ones.
+
+        A pipeline is reaped only when it's `running` AND it is not a task
+        live on this process (`active_ids`) AND it has emitted no events
+        for `idle_minutes`. A progressing build streams events constantly,
+        so it is never falsely failed; only a build whose task actually
+        died (crash, hot-reload, stuck) goes quiet long enough to be
+        reaped. Its open phases are failed too. Returns the count reaped."""
+        clauses = ["status = 'running'"]
+        params: dict[str, Any] = {"idle": idle_minutes}
+        if active_ids:
+            ph = ", ".join(f":a{i}" for i in range(len(active_ids)))
+            params.update({f"a{i}": pid for i, pid in enumerate(active_ids)})
+            clauses.append(f"pipeline_id::text NOT IN ({ph})")
+        # Idle = newest event (or started_at if no events yet) is older than
+        # the window. A live build emits log/phase events every few seconds.
+        clauses.append(
+            "COALESCE("
+            "  (SELECT MAX(e.ts) FROM pipeline_events e WHERE e.pipeline_id = pipelines.pipeline_id),"
+            "  started_at"
+            ") < NOW() - (:idle * INTERVAL '1 minute')"
+        )
+        return self._reap(
+            session, " AND ".join(clauses), params,
+            reason="orphaned: build went idle (task no longer running)",
+        )
+
+    def _reap(self, session: Session, where: str, params: dict[str, Any], *, reason: str) -> int:
+        """Shared reaper: flip matching `running` pipelines → failed and
+        their open (running/pending) phases → failed, in the caller's
+        session/transaction."""
+        ids = [str(r[0]) for r in session.execute(
+            text(f"SELECT pipeline_id FROM pipelines WHERE {where}"), params,
+        ).fetchall()]
+        if not ids:
+            return 0
+        id_ph = ", ".join(f":p{i}" for i in range(len(ids)))
+        id_params = {f"p{i}": pid for i, pid in enumerate(ids)}
+        session.execute(
+            text(f"""
                 UPDATE pipelines
                 SET status = 'failed',
-                    error = COALESCE(error, 'orphaned: API restarted while pipeline was running'),
+                    error = COALESCE(error, :reason),
                     finished_at = COALESCE(finished_at, NOW())
-                WHERE status = 'running'
+                WHERE pipeline_id::text IN ({id_ph})
             """),
+            {"reason": reason, **id_params},
         )
-        return result.rowcount or 0
+        session.execute(
+            text(f"""
+                UPDATE pipeline_phases
+                SET status = 'failed',
+                    error = COALESCE(error, :reason),
+                    finished_at = COALESCE(finished_at, NOW())
+                WHERE status IN ('running', 'pending')
+                  AND pipeline_id::text IN ({id_ph})
+            """),
+            {"reason": reason, **id_params},
+        )
+        return len(ids)
+
+    def delete(self, session: Session, pipeline_id: str) -> bool:
+        """Hard-delete a pipeline and everything it owns (its replay-event
+        log + per-phase rows). Used by the "Delete build" action so a
+        zombie/stuck build can be removed for good — once the row is gone
+        it cannot resurrect on the next list/stream. Does NOT touch the
+        plan/profile the build produced (those have their own deletes,
+        with optional Cloud cleanup); this only removes the build record."""
+        session.execute(
+            text("DELETE FROM pipeline_events WHERE pipeline_id = :pid"),
+            {"pid": pipeline_id},
+        )
+        session.execute(
+            text("DELETE FROM pipeline_phases WHERE pipeline_id = :pid"),
+            {"pid": pipeline_id},
+        )
+        result = session.execute(
+            text("DELETE FROM pipelines WHERE pipeline_id = :pid"),
+            {"pid": pipeline_id},
+        )
+        return (result.rowcount or 0) > 0
+
+    def delete_by_status(self, session: Session, statuses: list[str]) -> int:
+        """Bulk-delete pipelines in the given statuses (+ their events and
+        phases). Backs the "Clear failed builds" action that clears the
+        list of dead/reload-casualty rows. Returns the count removed."""
+        if not statuses:
+            return 0
+        sph = ", ".join(f":s{i}" for i in range(len(statuses)))
+        ids = [str(r[0]) for r in session.execute(
+            text(f"SELECT pipeline_id FROM pipelines WHERE status IN ({sph})"),
+            {f"s{i}": st for i, st in enumerate(statuses)},
+        ).fetchall()]
+        if not ids:
+            return 0
+        iph = ", ".join(f":p{i}" for i in range(len(ids)))
+        iparams = {f"p{i}": pid for i, pid in enumerate(ids)}
+        session.execute(text(f"DELETE FROM pipeline_events WHERE pipeline_id::text IN ({iph})"), iparams)
+        session.execute(text(f"DELETE FROM pipeline_phases WHERE pipeline_id::text IN ({iph})"), iparams)
+        session.execute(text(f"DELETE FROM pipelines WHERE pipeline_id::text IN ({iph})"), iparams)
+        return len(ids)
 
     # ── Pipeline events (SSE replay log) ─────────────────────────────
 

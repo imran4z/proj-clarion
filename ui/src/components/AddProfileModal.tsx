@@ -18,11 +18,22 @@
  * The parent is responsible for navigating after `onSubmitted` fires,  * keeps this component agnostic of routing decisions.
  */
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { Check, Globe, X, Loader2, FileSearch, Rocket } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { Check, Globe, X, Loader2, FileSearch, Rocket, AlertTriangle, ArrowRight } from "lucide-react";
 
 import { Button } from "@/components/Button";
 import { cn } from "@/lib/cn";
 import { usePipeline } from "@/lib/PipelineContext";
+import { listProfiles, type ProfileSummary } from "@/lib/api";
+
+/** Canonical host for dedup: lowercased, scheme/www/path stripped. */
+function normalizeHost(s: string): string {
+  return s.trim().toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .split("/")[0];
+}
 
 export type AddProfilePreset = "smoke" | "demo" | "auto" | "stress";
 
@@ -89,10 +100,15 @@ export function AddProfileModal({
   onSubmitted: (pipelineId: string) => void;
 }) {
   const pipeline = usePipeline();
+  const navigate = useNavigate();
+  const profilesQ = useQuery({ queryKey: ["profiles"], queryFn: listProfiles, enabled: open });
   const [url, setUrl] = useState("");
   const [preset, setPreset] = useState<AddProfilePreset>("demo");
   const [submitting, setSubmitting] = useState<SubmitIntent | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Set once the SE chooses to research a company that already has a
+  // profile — overrides the duplicate guard for this submission.
+  const [forced, setForced] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Esc to close. Reset state when the modal opens.
@@ -102,6 +118,7 @@ export function AddProfileModal({
     setPreset("demo");
     setError(null);
     setSubmitting(null);
+    setForced(false);
     // Autofocus URL field on next tick (after the modal animates in).
     requestAnimationFrame(() => inputRef.current?.focus());
     function onKey(e: KeyboardEvent) {
@@ -116,11 +133,22 @@ export function AddProfileModal({
   const resolved = resolveCompanyInput(url);
   const canSubmit = resolved !== null;
 
+  // Duplicate guard: if a profile already exists for the resolved host,
+  // surface it instead of researching the same company again. Cleared
+  // once the SE explicitly overrides (forced).
+  const existing: ProfileSummary | null = (resolved && !forced)
+    ? ((profilesQ.data ?? []).find(
+        (p) => !p.pending && normalizeHost(p.primary_url) === normalizeHost(resolved.url),
+      ) ?? null)
+    : null;
+
   /** Submit with one of the two intents. Research-only stops after the
    *  research phase (no plan, no Cloud-side provisioning); full-build
-   *  runs the whole research-to-kg-publish flow. */
+   *  runs research → plan and STOPS at the plan (provisioning is gated
+   *  on an explicit approval, same as everywhere else). */
   async function submit(intent: SubmitIntent) {
     if (!resolved || submitting) return;
+    if (existing) return; // guarded — the duplicate banner is showing
     setSubmitting(intent);
     setError(null);
     try {
@@ -128,7 +156,8 @@ export function AddProfileModal({
         url: resolved.url,
         days: 1,
         volume_per_day: intent === "full_build" ? volumeForPreset(preset) : undefined,
-        stop_after_phase: intent === "research_only" ? "research" : undefined,
+        stop_after_phase: intent === "research_only" ? "research" : "plan",
+        allow_duplicate: forced,
       });
       onSubmitted(newId);
     } catch (err) {
@@ -321,15 +350,41 @@ export function AddProfileModal({
             </div>
           )}
 
+          {/* Duplicate guard — we already researched this company. Open
+              the existing profile (or override to research again). */}
+          {existing && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-[color:var(--color-warning)]/40 bg-[var(--color-warning-bg)] px-3 py-2.5">
+              <AlertTriangle size={15} className="shrink-0 text-[var(--color-warning)]" />
+              <span className="text-[13px] text-[var(--color-text)]">
+                A profile for{" "}
+                <span className="font-medium">{existing.company_name ?? normalizeHost(existing.primary_url)}</span>{" "}
+                already exists.
+              </span>
+              <div className="ml-auto flex items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="primary"
+                  onClick={() => { onClose(); navigate(`/profiles/${existing.profile_id}`); }}
+                >
+                  Open profile <ArrowRight size={13} />
+                </Button>
+                <Button type="button" size="sm" variant="ghost" onClick={() => setForced(true)}>
+                  Research again anyway
+                </Button>
+              </div>
+            </div>
+          )}
+
           {/* Two intents. "Just add profile" runs research and stops,               gives the SE a CompanyProfile in the library without
               spinning up dashboards / KG / Cloud entities. "Research
-              & build" runs the whole flow end-to-end. */}
+              & build" runs research → plan (stops at the plan). */}
           <div className="pt-2 grid grid-cols-1 sm:grid-cols-[1fr_1fr] gap-2">
             <Button
               type="button"
               variant="secondary"
               onClick={() => void submit("research_only")}
-              disabled={!canSubmit || submitting !== null}
+              disabled={!canSubmit || submitting !== null || !!existing}
               className="h-11 justify-center"
               title="Run only the research phase. Stores a CompanyProfile and stops. No plan, no Cloud-side provisioning."
             >
@@ -346,9 +401,9 @@ export function AddProfileModal({
             <Button
               type="submit"
               variant="primary"
-              disabled={!canSubmit || submitting !== null}
+              disabled={!canSubmit || submitting !== null || !!existing}
               className="h-11 justify-center"
-              title="Research, plan, provision, and KG publish. Full end-to-end build using the selected build size."
+              title="Research, then plan — stops at a reviewable plan (provisioning is gated on approval)."
             >
               {submitting === "full_build" ? (
                 <>

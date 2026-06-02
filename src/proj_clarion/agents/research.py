@@ -83,6 +83,12 @@ populated only with citation_ids that appear in the provided sources, OR the
 unsourced claim MUST be added to `synthesized_flags` with a clear rationale.
 
 Hard rules:
+- For `company.name`, use the widely-recognized brand / trading name people
+  actually say in conversation (e.g. "Huntington Bank", "Google", "Meta"), NOT
+  the formal legal / holding-company entity. Put the formal entity in
+  `company.legal_name` (e.g. "Huntington Bancshares Incorporated",
+  "Alphabet Inc."). When a bank-holding company operates a consumer bank, name
+  the bank. Keep the name in plain English.
 - Output a single JSON object, no prose, no markdown fences
 - Use only citation_ids that appear in the sources list
 - For employee_count_estimate, revenue figures, and any other numeric claim

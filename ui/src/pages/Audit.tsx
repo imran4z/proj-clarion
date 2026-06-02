@@ -21,6 +21,7 @@ import { History, GitCommitHorizontal, MessageCircle } from "lucide-react";
 
 import { Badge, type BadgeTone } from "@/components/Badge";
 import { Card } from "@/components/Card";
+import { PageHeader } from "@/components/PageHeader";
 import { Pagination } from "@/components/Pagination";
 import {
   listDemoHistory, listPlanAudit, listProfileAudit,
@@ -31,19 +32,11 @@ import { cn } from "@/lib/cn";
 export function AuditPage() {
   return (
     <div className="space-y-8">
-      <header>
-        <div className="text-[11px] font-mono uppercase tracking-[0.08em] text-[var(--color-text-faint)]">
-          Audit
-        </div>
-        <h1 className="mt-2 text-[28px] font-semibold tracking-tight leading-tight text-[var(--color-text)]">
-          Activity &amp; history
-        </h1>
-        <p className="text-[var(--color-text-muted)] mt-1 text-sm max-w-2xl">
-          Every demo emitter that&rsquo;s spun up on this stack, every plan-state
-          transition, and every profile extension. Each section pages independently,
-          newest first.
-        </p>
-      </header>
+      <PageHeader
+        eyebrow="Audit"
+        title="Everything that happened."
+        lede="Every demo emitter that's spun up on this stack, every plan-state transition, and every profile extension. Each section pages independently, newest first."
+      />
 
       <DemoHistorySection />
       <PlanChangesSection />

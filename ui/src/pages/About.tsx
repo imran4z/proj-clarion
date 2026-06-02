@@ -34,12 +34,13 @@ import { Link } from "react-router-dom";
 
 import { Card } from "@/components/Card";
 import { Badge } from "@/components/Badge";
+import { PageHeader } from "@/components/PageHeader";
 import { cn } from "@/lib/cn";
 
 export function AboutPage() {
   return (
     <div className="space-y-6">
-      <PageHeader />
+      <AboutHeader />
       <ProjectPitchCard />
       <ArchitectureDiagramCard />
       <PipelinePhasesCard />
@@ -54,23 +55,14 @@ export function AboutPage() {
 // Header — matches the Plan + Profile detail-page rhythm.
 // ──────────────────────────────────────────────────────────────────
 
-function PageHeader() {
+function AboutHeader() {
   return (
-    <div>
-      <div className="text-[11px] font-mono uppercase tracking-[0.08em] text-[var(--color-text-faint)]">
-        About this project
-      </div>
-      <h1 className="mt-1 text-[32px] font-medium tracking-tight leading-tight">
-        Proj Clarion <span className="h1-display">architecture</span>.
-      </h1>
-      <p className="mt-3 text-[var(--color-text-muted)] text-[15px] leading-relaxed max-w-3xl">
-        A vertical-aware demo-data generator for Grafana Cloud business
-        observability. Type a prospect URL → research → plan → generate →
-        provision dashboards + alerts → emit live telemetry into your stack.
-        Every LLM call is instrumented for AI observability via Grafana
-        Sigil + OpenTelemetry.
-      </p>
-      <div className="mt-4 flex flex-wrap gap-2">
+    <PageHeader
+      eyebrow="About this project"
+      title="Proj Clarion"
+      em="architecture."
+      lede="A vertical-aware demo-data generator for Grafana Cloud business observability. Type a prospect URL → research → plan → generate → provision dashboards + alerts → emit live telemetry into your stack. Every LLM call is instrumented for AI observability via Grafana Sigil + OpenTelemetry."
+      actions={
         <Link
           to="/docs/ai-obs"
           className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-canvas-elev1)] px-3 py-1.5 text-xs font-medium hover:bg-[var(--color-accent-bg)] hover:border-[var(--color-accent-border)] transition-colors"
@@ -78,8 +70,8 @@ function PageHeader() {
           <BookOpen size={12} />
           Instrument your own Claude app
         </Link>
-      </div>
-    </div>
+      }
+    />
   );
 }
 

@@ -15,10 +15,12 @@ const button = cva(
       variant: {
         primary:
           "bg-[var(--color-accent)] text-black hover:bg-[var(--color-accent)]/90",
+        // Secondary + ghost share the app-wide "watery accent" hover: a
+        // faint accent wash + accent-tinted border on hover, eased.
         secondary:
-          "bg-white/[0.06] text-[var(--color-text)] hover:bg-white/[0.10] border border-[var(--color-border)]",
+          "bg-white/[0.06] text-[var(--color-text)] border border-[var(--color-border)] hover:bg-[color-mix(in_srgb,var(--color-accent)_12%,transparent)] hover:border-[color:var(--color-accent-border)]",
         ghost:
-          "text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-white/[0.04]",
+          "text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[color-mix(in_srgb,var(--color-accent)_9%,transparent)]",
         danger:
           "bg-[var(--color-danger)]/15 text-[var(--color-danger)] hover:bg-[var(--color-danger)]/25 border border-[var(--color-danger)]/30",
       },

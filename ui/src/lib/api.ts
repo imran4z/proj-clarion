@@ -268,6 +268,20 @@ export interface HealthReport {
 export const getPlanHealth = (id: string) =>
   request<HealthReport>(`/plans/${encodeURIComponent(id)}/health`);
 
+export interface ClearCloudResult {
+  plan_id: string;
+  cleared: boolean;
+  reverted_to: string | null;
+  stdout_tail: string[];
+  stderr_tail: string[];
+}
+/** Remove a plan's Grafana Cloud footprint (dashboards folder + alert
+ *  rules) but KEEP the Clarion plan. The "tidy my tenant, keep the
+ *  plan" action; the plan reverts to not-provisioned so it can be
+ *  re-provisioned later. */
+export const clearPlanCloud = (id: string) =>
+  request<ClearCloudResult>(`/plans/${encodeURIComponent(id)}/cloud/clear`, { method: "POST" });
+
 // ─── Orphan cleanup ────────────────────────────────────────────────
 
 export interface OrphanFolder {
@@ -398,6 +412,9 @@ export async function createPipeline(
     /** Optional cut-off, orchestrator stops after this phase succeeds.
      *  Use "research" for the "Just add profile" flow on Profiles. */
     stop_after_phase?: PipelinePhase;
+    /** Override the server-side duplicate-profile guard (the "build new
+     *  anyway" path). Omit/false → a 409 if a profile for the host exists. */
+    allow_duplicate?: boolean;
   },
 ): Promise<PipelineSummary> {
   return request<PipelineSummary>("/pipelines/run", {
@@ -423,8 +440,25 @@ export async function runPipelineFromPhase(body: {
   plan_id?: string;
   parent_pipeline_id?: string;
   volume_per_day?: number;
+  /** Cut-off phase. UI sets "plan" when building a plan from a profile so
+   *  nothing provisions until approval. */
+  stop_after_phase?: PipelinePhase;
 }): Promise<PipelineSummary> {
   return request<PipelineSummary>("/pipelines/run-from-phase", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Continue an existing build IN PLACE (same pipeline_id) from a phase —
+ *  default "approve", which approves the plan then generate → provision →
+ *  kg-publish. No second build row; the build just moves through the next
+ *  phases. plan_id/profile_id are inherited from the pipeline server-side. */
+export async function continuePipeline(
+  pipelineId: string,
+  body: { starting_phase?: PipelinePhase; plan_id?: string; profile_id?: string } = {},
+): Promise<PipelineSummary> {
+  return request<PipelineSummary>(`/pipelines/${pipelineId}/continue`, {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -440,6 +474,18 @@ export const getPipelineEvents = (id: string) =>
   );
 export const cancelPipeline = (id: string) =>
   request<{ cancelled: boolean }>(`/pipelines/${id}/cancel`, { method: "POST" });
+
+/** Hard-delete a build: cancels it if running, then removes the row +
+ *  its events/phases. Use for a wedged/runaway build that won't stop.
+ *  Does NOT delete the produced plan/profile (or their Cloud resources). */
+export const deletePipeline = (id: string) =>
+  request<{ deleted: boolean }>(`/pipelines/${id}`, { method: "DELETE" });
+
+/** Bulk-remove all failed + cancelled builds (rows + events/phases).
+ *  Clears the Builds list of dead/reload-casualty runs; never touches
+ *  running or done builds. */
+export const prunePipelines = () =>
+  request<{ deleted: number }>("/pipelines/prune", { method: "POST" });
 
 // ─── Demo sessions (live emitter) ──────────────────────────────────
 //

@@ -13,6 +13,7 @@ v0.8: + persistence (`pipelines`, `pipeline_events`, `pipeline_phases`)
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from typing import Any, Literal
 
@@ -22,6 +23,9 @@ from sse_starlette.sse import EventSourceResponse
 
 from proj_clarion.api.pipeline_registry import (
     cancel_pipeline,
+    continue_pipeline,
+    delete_pipeline,
+    prune_pipelines,
     get_pipeline,
     get_pipeline_events,
     list_pipelines,
@@ -31,9 +35,30 @@ from proj_clarion.api.pipeline_registry import (
     PipelineState,
 )
 from proj_clarion.api.url_input import URLValidationError, normalize_company_url
-from proj_clarion.storage import PipelineRepo, session_scope
+from proj_clarion.storage import PipelineRepo, ProfileRepo, session_scope
 
 router = APIRouter(prefix="/api/pipelines", tags=["pipelines"])
+
+
+def _norm_host(s: str) -> str:
+    """Canonical host for dedup: lowercased, scheme/www/path stripped."""
+    s = (s or "").strip().lower()
+    s = re.sub(r"^https?://", "", s)
+    s = re.sub(r"^www\.", "", s)
+    return s.split("/", 1)[0]
+
+
+def _existing_profile_for_host(host: str) -> str | None:
+    """Return the profile_id of an existing CompanyProfile whose source
+    URL resolves to `host`, or None. Bounded scan — the library is small
+    and this only runs on a build kickoff."""
+    if not host:
+        return None
+    with session_scope() as s:
+        for pid, _created, source_url in ProfileRepo().list(s, limit=1000):
+            if _norm_host(source_url) == host:
+                return pid
+    return None
 
 PhaseName = Literal["research", "plan", "approve", "generate", "provision", "kg-publish"]
 
@@ -51,6 +76,10 @@ class RunPipelineBody(BaseModel):
     # profile" flow (research the URL, store the profile, don't plan /
     # generate / provision). None = run the whole pipeline.
     stop_after_phase: PhaseName | None = None
+    # Dedup backstop: a full build runs research, which would create a
+    # SECOND profile for a company already in the library. We 409 in that
+    # case unless the caller explicitly opts in here ("Build new anyway").
+    allow_duplicate: bool = False
 
 
 class RunFromPhaseBody(BaseModel):
@@ -72,6 +101,10 @@ class RunFromPhaseBody(BaseModel):
     plan_id: str | None = None
     parent_pipeline_id: str | None = None
     volume_per_day: int | None = Field(default=None, ge=100, le=100_000)
+    # Optional cut-off (same semantics as RunPipelineBody). The UI sets
+    # this to "plan" when building a plan from a profile so nothing is
+    # provisioned until the SE approves.
+    stop_after_phase: PhaseName | None = None
 
 
 class PipelineSummary(BaseModel):
@@ -150,6 +183,23 @@ async def run(body: RunPipelineBody = Body(...)) -> PipelineSummary:
         normalized = normalize_company_url(body.url)
     except URLValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Dedup backstop (also enforced client-side). A /run build always
+    # researches, which would mint a second profile for a company we
+    # already have. Block it with a 409 (carrying the existing profile_id)
+    # unless the caller explicitly opted into a duplicate.
+    if not body.allow_duplicate:
+        host = _norm_host(normalized.url)
+        existing = _existing_profile_for_host(host)
+        if existing:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"A profile for {host} already exists ({existing}). "
+                    f"Open it, build from it, or retry with allow_duplicate=true."
+                ),
+            )
+
     state = start_pipeline(
         normalized.url, body.company, days=body.days,
         volume_per_day=body.volume_per_day,
@@ -214,7 +264,45 @@ async def run_from_phase(body: RunFromPhaseBody = Body(...)) -> PipelineSummary:
         plan_id=body.plan_id,
         parent_pipeline_id=body.parent_pipeline_id,
         volume_per_day=body.volume_per_day,
+        stop_after_phase=body.stop_after_phase,
     )
+    return _summarise(state)
+
+
+class ContinueBody(BaseModel):
+    """Resume an existing build in place (same pipeline_id). Defaults to the
+    approval gate: approve the plan, then generate → provision → kg-publish.
+    plan_id/profile_id are inherited from the pipeline row when omitted."""
+
+    starting_phase: PhaseName = "approve"
+    stop_after_phase: PhaseName | None = None
+    plan_id: str | None = None
+    profile_id: str | None = None
+
+
+@router.post("/{pipeline_id}/continue", response_model=PipelineSummary)
+async def continue_endpoint(
+    pipeline_id: str, body: ContinueBody = Body(default=ContinueBody()),
+) -> PipelineSummary:
+    """Approve + provision (or resume from any later phase) by appending to
+    the SAME build — no second pipeline row. This is the deterministic
+    'I clicked Approve and the build just continues' path.
+
+    Must be `async` (not sync): continue_pipeline schedules the runner via
+    asyncio.create_task, which requires the event-loop thread. A sync route
+    runs in a threadpool with no running loop and would 500."""
+    try:
+        state = continue_pipeline(
+            pipeline_id,
+            starting_phase=body.starting_phase,
+            stop_after_phase=body.stop_after_phase,
+            plan_id=body.plan_id,
+            profile_id=body.profile_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if state is None:
+        raise HTTPException(status_code=404, detail=f"pipeline {pipeline_id} not found")
     return _summarise(state)
 
 
@@ -299,3 +387,23 @@ def cancel_endpoint(pipeline_id: str) -> dict[str, bool]:
     if get_pipeline(pipeline_id) is None:
         raise HTTPException(status_code=404, detail=f"pipeline {pipeline_id} not found")
     return {"cancelled": cancel_pipeline(pipeline_id)}
+
+
+@router.post("/prune")
+def prune_endpoint() -> dict[str, int]:
+    """Bulk-remove failed + cancelled builds (their rows + events/phases)
+    so the Builds list isn't cluttered with dead/reload-casualty runs.
+    Never touches running or done builds."""
+    return {"deleted": prune_pipelines(("failed", "cancelled"))}
+
+
+@router.delete("/{pipeline_id}")
+def delete_endpoint(pipeline_id: str) -> dict[str, bool]:
+    """Hard-delete a build (cancels it first if still running, then drops
+    the row + its events/phases). The escape hatch for a wedged/runaway
+    build that won't converge. Leaves the produced plan/profile intact —
+    use their own deletes (with Cloud cleanup) to clear provisioned
+    Grafana folders + alerts."""
+    if get_pipeline(pipeline_id) is None:
+        raise HTTPException(status_code=404, detail=f"pipeline {pipeline_id} not found")
+    return {"deleted": delete_pipeline(pipeline_id)}

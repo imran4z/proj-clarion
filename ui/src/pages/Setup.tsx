@@ -28,7 +28,8 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from "react";
 
-import { Logo } from "@/components/Logo";
+import { ClarionMark } from "@/components/icons/ClarionIcons";
+import { PageHeader } from "@/components/PageHeader";
 import {
   setupApi,
   type Group, type SetupKeyMeta, type SetupSchema, type SetupStatus,
@@ -740,19 +741,18 @@ function SetupShell({
     // matching the Dashboard / DemoHistory style.
     return (
       <div className="space-y-6">
-        <header>
-          <div className="text-[11px] font-mono uppercase tracking-[0.08em] text-[var(--color-text-faint)]">
-            Settings
-          </div>
-          <h1 className="mt-2 text-[28px] font-semibold tracking-tight leading-tight text-[var(--color-text)]">
-            Tokens &amp; credentials
-          </h1>
-          <p className="text-[var(--color-text-muted)] mt-1 text-sm max-w-2xl">
-            Rotate API keys, re-upload an <code className="font-mono">.env</code>, or fix any
-            field that&rsquo;s gone stale. Changes are written to{" "}
-            <code className="font-mono">.env</code> on this machine on Save.
-          </p>
-        </header>
+        <PageHeader
+          eyebrow="Settings"
+          title="Connect your"
+          em="credentials."
+          lede={
+            <>
+              Rotate API keys, re-upload an <code className="font-mono">.env</code>, or fix any
+              field that&rsquo;s gone stale. Changes are written to{" "}
+              <code className="font-mono">.env</code> on this machine on Save.
+            </>
+          }
+        />
         {children}
       </div>
     );
@@ -764,7 +764,7 @@ function SetupShell({
         <header className="text-center mb-8">
           <div className="inline-flex items-center gap-2.5 text-sm text-[var(--color-text-muted)] mb-3.5">
             <span className="setup-mark" aria-hidden="true">
-              <Logo size={14} monochrome />
+              <ClarionMark size={14} />
             </span>
             <span className="font-medium text-[var(--color-text)]">Proj-Clarion</span>
           </div>

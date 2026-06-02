@@ -116,8 +116,19 @@ def _row_to_state(row: dict[str, Any], events: list[dict[str, Any]] | None = Non
 
 
 def list_pipelines() -> list[PipelineState]:
-    """Newest first. Reads from Postgres so prior-process runs show up."""
+    """Newest first. Reads from Postgres so prior-process runs show up.
+
+    Self-heals zombies first: any `running` row with no live task on this
+    process (`_LIVE`) is an orphan from a reloaded/crashed process, so we
+    reap it (+ its open phases) here. The UI polls this every few seconds,
+    so a stuck build converges to `failed` on its own — no restart needed."""
     with session_scope() as s:
+        try:
+            reaped = _repo.reap_stale(s, set(_LIVE.keys()))
+            if reaped:
+                _logger.warning("pipeline_registry.reaped_stale", count=reaped)
+        except Exception:  # noqa: BLE001 — never let reaping break the list
+            _logger.exception("pipeline_registry.reap_stale_failed")
         rows = _repo.list(s, limit=200)
     return [_row_to_state(r) for r in rows]
 
@@ -186,6 +197,7 @@ def start_pipeline_from_phase(
     plan_id: str | None = None,
     parent_pipeline_id: str | None = None,
     volume_per_day: int | None = None,
+    stop_after_phase: str | None = None,
 ) -> PipelineState:
     """Resume from a specific phase. Caller is responsible for providing
     whatever inputs that phase requires:
@@ -205,8 +217,68 @@ def start_pipeline_from_phase(
             "profile_path": profile_path,
             "plan_id": plan_id,
             "volume_per_day": volume_per_day,
+            "stop_after_phase": stop_after_phase,
         },
     )
+
+
+def continue_pipeline(
+    pipeline_id: str,
+    *,
+    starting_phase: str = "approve",
+    stop_after_phase: str | None = None,
+    plan_id: str | None = None,
+    profile_id: str | None = None,
+) -> PipelineState | None:
+    """Resume a build that stopped at the plan (or any terminal point) by
+    appending the remaining phases to the SAME pipeline_id — no second
+    build row. Reopens the row to `running`, then runs the orchestrator
+    from `starting_phase` writing events after the existing ones.
+
+    Returns None if the pipeline doesn't exist. If it's already running we
+    return its current state unchanged (idempotent — a double-click does
+    not start a second task). Raises ValueError if there's no plan_id to
+    act on (caller surfaces a 400)."""
+    with session_scope() as s:
+        row = _repo.get(s, pipeline_id)
+        if row is None:
+            return None
+        if row["status"] == "running":
+            return _row_to_state(row)
+        # Inherit the plan/profile this build already produced.
+        plan_id = plan_id or row.get("plan_id")
+        profile_id = profile_id or row.get("profile_id")
+        if not plan_id:
+            raise ValueError(
+                "cannot continue: this build has no plan to approve/provision"
+            )
+        url = row["url"]
+        company = row.get("company")
+        days = row.get("days") or 1
+        start_seq = _repo.event_count(s, pipeline_id)
+        _repo.reopen(s, pipeline_id)
+
+    live = _LiveState(pipeline_id=pipeline_id)
+    _LIVE[pipeline_id] = live
+    live.task = asyncio.create_task(
+        _run_one(
+            live, url, company, days,
+            runner_kwargs={
+                "starting_phase": starting_phase,
+                "stop_after_phase": stop_after_phase,
+                "plan_id": plan_id,
+                "profile_id": profile_id,
+                # The prior phases' done-events are already on this stream.
+                "emit_reused_phases": False,
+            },
+            start_seq=start_seq,
+        )
+    )
+
+    with session_scope() as s:
+        row2 = _repo.get(s, pipeline_id)
+    assert row2 is not None
+    return _row_to_state(row2)
 
 
 def cancel_pipeline(pipeline_id: str) -> bool:
@@ -245,6 +317,32 @@ def cancel_pipeline(pipeline_id: str) -> bool:
     return signalled or flipped
 
 
+def prune_pipelines(statuses: tuple[str, ...] = ("failed", "cancelled")) -> int:
+    """Bulk-delete terminal builds in the given statuses (default the
+    dead/reload-casualty ones) so the Builds list isn't cluttered. Never
+    touches `running` or `done`. Returns the count removed."""
+    safe = [s for s in statuses if s in ("failed", "cancelled")]
+    if not safe:
+        return 0
+    with session_scope() as s:
+        return _repo.delete_by_status(s, safe)
+
+
+def delete_pipeline(pipeline_id: str) -> bool:
+    """Hard-delete a build: cancel it first if it's still live on this
+    process (so we don't orphan a running task), then remove the pipeline
+    row + its events + phases from Postgres. Returns True if a row was
+    deleted. Once deleted the build cannot reappear on a list/refresh —
+    this is the escape hatch for a wedged or runaway build."""
+    live = _LIVE.get(pipeline_id)
+    if live is not None and live.task is not None and not live.task.done():
+        live.task.cancel()
+        live.new_event.set()
+    _LIVE.pop(pipeline_id, None)
+    with session_scope() as s:
+        return _repo.delete(s, pipeline_id)
+
+
 async def stream_pipeline(pipeline_id: str) -> AsyncIterator[dict[str, Any]]:
     """SSE source. Replays from DB, then tails live until terminal status.
 
@@ -280,9 +378,25 @@ async def stream_pipeline(pipeline_id: str) -> AsyncIterator[dict[str, Any]]:
     # Live tail phase: wait for new events; yield them as they land.
     live = _LIVE.get(pipeline_id)
     if live is None:
-        # Pipeline says running but no live state on this process →
-        # orphaned during a race or reaper hasn't run yet. Either way,
-        # nothing to tail.
+        # No live task on this process. Reap it IF it's been idle long
+        # enough (conservative — never fail a build that's merely between
+        # processes but recently active), then converge the client to
+        # whatever the DB now says. If it wasn't reaped (still "running",
+        # recently active), we just stop tailing; the client's periodic
+        # reconcile picks up the terminal status once it does go idle.
+        terminal_status: str | None = None
+        terminal_error: str | None = None
+        try:
+            with session_scope() as s:
+                _repo.reap_stale(s, set(_LIVE.keys()))
+                row2 = _repo.get(s, pipeline_id)
+            if row2 is not None and row2["status"] != "running":
+                terminal_status = row2["status"]
+                terminal_error = row2.get("error")
+        except Exception:  # noqa: BLE001
+            _logger.exception("pipeline_registry.stream_reap_failed")
+        if terminal_status is not None:
+            yield {"event": "pipeline", "status": terminal_status, "error": terminal_error}
         return
 
     while True:
@@ -347,6 +461,8 @@ async def _run_one(
     company: str | None,
     days: int,
     runner_kwargs: dict[str, Any],
+    *,
+    start_seq: int = 0,
 ) -> None:
     """Background task body. Pumps run_demo_pipeline events into
     Postgres + signals live consumers. Sets terminal status on exit.
@@ -357,7 +473,7 @@ async def _run_one(
     """
     pipeline_id = live.pipeline_id
     pending: list[dict[str, Any]] = []
-    next_seq = 0
+    next_seq = start_seq
 
     async def flush() -> None:
         nonlocal next_seq, pending

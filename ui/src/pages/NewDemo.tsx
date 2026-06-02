@@ -1,22 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Sparkles, CheckCircle2, AlertCircle, Loader2,
   ExternalLink, Square, Rocket, Clock, Bug, RefreshCw, Info,
-  History, MinusCircle, ArrowLeft, FileSearch,
-  ScrollText, ClipboardList, X,
+  MinusCircle, ArrowLeft, FileSearch,
+  ScrollText, ClipboardList, X, Trash2, Wand2,
 } from "lucide-react";
 
 import {
-  type PipelinePhase, PIPELINE_PHASES, cancelPipeline,
+  type PipelinePhase, PIPELINE_PHASES, cancelPipeline, deletePipeline, prunePipelines,
   listPipelines, type PipelineSummary,
 } from "@/lib/api";
 import { usePipeline, type PhaseState } from "@/lib/PipelineContext";
+import { useAssistant } from "@/lib/AssistantContext";
 import { Card } from "@/components/Card";
 import { Button } from "@/components/Button";
 import { Badge } from "@/components/Badge";
 import { CrumbChip } from "@/components/CrumbChip";
+import { PageHeader } from "@/components/PageHeader";
+import { ClarionGlyph, ClarionEmptyArt, type ClarionGlyphName } from "@/components/icons/ClarionIcons";
 import { Pagination } from "@/components/Pagination";
 import { PipelineKpiCard } from "@/components/PipelineKpiCard";
 // PipelineStepper exists but the live view now uses the .journey-steps
@@ -160,10 +163,26 @@ const PHASE_LABEL: Record<PipelinePhase, string> = {
 
 function BuildHistoryView() {
   const navigate = useNavigate();
+  const qc = useQueryClient();
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const [filter, setFilter] = useState("");
   const [stateFilter, setStateFilter] = useState<"all" | "running" | "done" | "failed">("all");
+  const [pruning, setPruning] = useState(false);
+
+  async function clearFailed() {
+    if (pruning) return;
+    if (!window.confirm("Remove all failed and cancelled builds from the list?\n\nThis only deletes the build records — plans/profiles and Cloud resources are untouched.")) return;
+    setPruning(true);
+    try {
+      await prunePipelines();
+      qc.invalidateQueries({ queryKey: ["pipelines"] });
+    } catch (e) {
+      window.alert(`Couldn't clear builds: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setPruning(false);
+    }
+  }
 
   const list = useQuery({
     queryKey: ["pipelines"],
@@ -218,15 +237,11 @@ function BuildHistoryView() {
 
   return (
     <div className="space-y-6">
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight">Builds</h1>
-        <p className="text-[var(--color-text-muted)] mt-1 text-sm max-w-2xl">
-          Phase, duration, status. Click any row to open its live view.{" "}
-          <span className="text-[var(--color-text-faint)] tabular-nums">
-            {all.length} total
-          </span>
-        </p>
-      </header>
+      <PageHeader
+        eyebrow="Builds"
+        title="Every build, live or done."
+        lede="Phase, duration, status. Click any row to open its live view. Start a new build from the dashboard."
+      />
 
       {list.isLoading ? (
         <Card>
@@ -235,7 +250,7 @@ function BuildHistoryView() {
       ) : all.length === 0 ? (
         <Card>
           <div className="flex flex-col items-center justify-center py-16 text-center">
-            <History size={28} className="text-[var(--color-text-faint)] mb-3" />
+            <ClarionEmptyArt name="builds" className="mb-4 text-[var(--color-text-muted)]" />
             <div className="text-sm font-medium">No builds yet</div>
             <div className="text-xs text-[var(--color-text-muted)] mt-1 max-w-sm">
               Start one from the dashboard&rsquo;s &ldquo;What are we showing today?&rdquo; card.
@@ -335,6 +350,18 @@ function BuildHistoryView() {
                     <option value="done">Done</option>
                     <option value="failed">Failed</option>
                   </select>
+                  {all.some((b) => b.status === "failed" || b.status === "cancelled") && (
+                    <button
+                      type="button"
+                      onClick={() => void clearFailed()}
+                      disabled={pruning}
+                      title="Remove all failed + cancelled builds from the list (records only)"
+                      className="hover-wash ml-auto inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--color-border)] px-2.5 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:border-[color:var(--color-danger)]/40 disabled:opacity-50"
+                    >
+                      {pruning ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                      Clear failed
+                    </button>
+                  )}
                 </div>
 
                 {total === 0 ? (
@@ -353,6 +380,7 @@ function BuildHistoryView() {
                           <th className="text-left  font-medium px-4 py-2.5">Phase</th>
                           <th className="text-right font-medium px-4 py-2.5">Duration</th>
                           <th className="text-right font-medium px-4 py-2.5">Started</th>
+                          <th className="px-2 py-2.5"><span className="sr-only">Actions</span></th>
                         </tr>
                       </thead>
                       <tbody>
@@ -395,6 +423,29 @@ function BuildHistoryView() {
 function BuildHistoryRow({
   build, onClick,
 }: { build: PipelineSummary; onClick: () => void }) {
+  const qc = useQueryClient();
+  const [deleting, setDeleting] = useState(false);
+
+  async function onDelete(e: React.MouseEvent) {
+    e.stopPropagation();
+    const ok = window.confirm(
+      `Delete build ${build.pipeline_id.slice(0, 8)}?\n\n` +
+      "This cancels it if it's still running and removes the build record. " +
+      "The plan/profile it produced (and any Grafana Cloud resources) are NOT " +
+      "deleted — use the plan's Delete (with Cloud cleanup) for those.",
+    );
+    if (!ok) return;
+    setDeleting(true);
+    try {
+      await deletePipeline(build.pipeline_id);
+      qc.invalidateQueries({ queryKey: ["pipelines"] });
+    } catch (err) {
+      window.alert(`Couldn't delete build: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   const flag =
     build.status === "running"   ? "live"   :
     build.status === "failed"    ? "danger" :
@@ -479,6 +530,18 @@ function BuildHistoryRow({
       <td className="px-4 py-3 text-right text-xs text-[var(--color-text-faint)] tabular-nums">
         {build.started_at ? formatRelativeTime(build.started_at) : ","}
       </td>
+      <td className="px-2 py-3 text-right">
+        <button
+          type="button"
+          onClick={onDelete}
+          disabled={deleting}
+          title="Delete this build"
+          aria-label="Delete this build"
+          className="grid place-items-center w-7 h-7 rounded-md text-[var(--color-text-faint)] transition-colors hover:bg-[var(--color-danger-bg)] hover:text-[var(--color-danger)] disabled:opacity-50"
+        >
+          {deleting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+        </button>
+      </td>
     </tr>
   );
 }
@@ -511,6 +574,8 @@ function PipelineRunView({
   onReRunSame: () => void;
 }) {
   const p = usePipeline();
+  const assistant = useAssistant();
+  const [approving, setApproving] = useState(false);
 
   // Recompute every 1s while running so duration tickers are live.
   const [tick, setTick] = useState(0);
@@ -599,12 +664,19 @@ function PipelineRunView({
     [p.phases],
   );
 
+  // A build stops at the plan by default (nothing provisioned). Only call
+  // it "live" when kg-publish actually ran; otherwise it landed a plan to
+  // review.
+  const wentLive = p.phases["kg-publish"].status === "done";
+  const landedPlan = p.phases["plan"].status === "done";
   const eyebrow =
     p.status === "running" ? "Building demo"
-  : p.status === "done"    ? "Demo is live"
+  : p.status === "done"    ? (wentLive ? "Demo is live" : landedPlan ? "Plan ready to review" : "Build complete")
   : p.status === "failed"  ? "Build failed"
   : p.status === "cancelled" ? "Build cancelled"
   : "Pipeline";
+  // Build landed a reviewable plan and stopped before provisioning.
+  const awaitingReview = p.status === "done" && !!p.planId && !wentLive;
 
   // Per-phase resume handler. Called from the side panel's "Re-run
   // from here" button. Reuses the same startFromPhase wiring that the
@@ -641,6 +713,31 @@ function PipelineRunView({
     }
   }
 
+  // One-click approve → provision, IN PLACE. The "approve" pipeline phase
+  // records the approval in-process (audited, no LLM/assistant call), then
+  // this SAME build continues through generate → provision → kg-publish.
+  // No second build row — it just moves through the next phases.
+  async function approveAndGoLive() {
+    if (!p.planId || !p.pipelineId || approving) return;
+    if (typeof p.continueInPlace !== "function") {
+      window.alert(
+        "Approve is unavailable in this browser session. "
+        + "Hard-refresh the page (Cmd+Shift+R) to load the latest UI.",
+      );
+      return;
+    }
+    setApproving(true);
+    try {
+      await p.continueInPlace(p.pipelineId, { startingPhase: "approve" });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("approve & go live failed:", err);
+      window.alert(`Couldn't approve and provision:\n\n${msg}`);
+    } finally {
+      setApproving(false);
+    }
+  }
+
   const host = (() => {
     if (!p.url) return "";
     try { return new URL(p.url).host.replace(/^www\./, ""); }
@@ -660,101 +757,141 @@ function PipelineRunView({
         <ArrowLeft size={14} /> Back to builds
       </button>
 
-      <div className="flex items-center gap-4 flex-wrap">
-        <div className="min-w-0">
-          <div className="text-[11px] font-mono uppercase tracking-[0.08em] text-[var(--color-text-faint)]">
-            {eyebrow}
-          </div>
-          <h1 className="mt-1 text-[24px] font-semibold tracking-tight leading-tight text-[var(--color-text)] truncate">
+      <PageHeader
+        eyebrow={eyebrow}
+        title={
+          <>
             {host || "Pipeline"}
             {p.pipelineId && (
               <span className="ml-2 font-mono text-[14px] text-[var(--color-text-faint)] font-normal">
                 {p.pipelineId.slice(0, 8)}{p.days ? ` · ${p.days}d` : ""}
               </span>
             )}
-          </h1>
-          {/* Crumb chips: links to the source profile + landed plan when
-              available. Lets the SE jump out of the build view into
-              the upstream profile (to extend research) or the
-              downstream plan (to review what got generated). The chip
-              styling makes the buttons obvious; the underline-on-hover
-              version this replaced read as faint metadata. */}
-          {(p.profileId || p.planId) && (
-            <div className="mt-3 flex items-center gap-2 flex-wrap">
-              {p.profileId && (
-                <CrumbChip
-                  to={`/profiles/${p.profileId}`}
-                  label="profile"
-                  value={p.profileId}
-                  icon={ScrollText}
-                  title="Open the company profile this build researched"
-                />
-              )}
-              {p.planId && (
-                <CrumbChip
-                  to={`/plans/${p.planId}`}
-                  label="plan"
-                  value={p.planId.slice(0, 8)}
-                  icon={ClipboardList}
-                  title="Open the demo plan this build produced"
-                />
-              )}
+          </>
+        }
+        actions={
+          <>
+            {p.status === "running" && (
+              <Button size="sm" variant="danger" onClick={onStop}>
+                <Square size={12} /> Stop
+              </Button>
+            )}
+            {(p.status === "done" || p.status === "failed" || p.status === "cancelled") && (
+              <>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  onClick={onReRunSame}
+                  title="Smart resume: skip phases that already succeeded, reuse existing profile/plan."
+                >
+                  <RefreshCw size={12} /> Re-run
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    const ok = window.confirm(
+                      "Force restart will run the entire pipeline from scratch:\n\n"
+                      + "  • A NEW profile_id (research agent runs again)\n"
+                      + "  • A NEW plan_id (planner agent makes 8+ LLM calls)\n"
+                      + "  • Generate, Provision, KG-publish all re-run\n\n"
+                      + "Cost: ~5-10 minutes + several dollars in LLM tokens.\n\n"
+                      + "If you only want to retry a failed phase, click Re-run instead.\n\n"
+                      + "Continue with Force restart?",
+                    );
+                    if (!ok) return;
+                    const u = p.url;
+                    const c = p.company ?? undefined;
+                    const d = p.days;
+                    p.reset();
+                    // Stops at the plan — provisioning stays gated on approval.
+                    if (u) void p.start({ url: u, company: c, days: d, stop_after_phase: "plan" });
+                  }}
+                  title="Discard this pipeline and run from research again."
+                  className="!text-[var(--color-warning)] hover:!bg-[var(--color-warning)]/10"
+                >
+                  <AlertCircle size={12} /> Force restart
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={onReset}
+                  title="Back to the builds list."
+                >
+                  <Sparkles size={12} /> New build
+                </Button>
+              </>
+            )}
+          </>
+        }
+      />
+
+      {/* Crumb chips: links to the source profile + landed plan when
+          available — jump out to the upstream profile or downstream plan. */}
+      {(p.profileId || p.planId) && (
+        <div className="flex items-center gap-2 flex-wrap">
+          {p.profileId && (
+            <CrumbChip
+              to={`/profiles/${p.profileId}`}
+              label="profile"
+              value={p.profileId}
+              icon={ScrollText}
+              title="Open the company profile this build researched"
+            />
+          )}
+          {p.planId && (
+            <CrumbChip
+              to={`/plans/${p.planId}`}
+              label="plan"
+              value={p.planId.slice(0, 8)}
+              icon={ClipboardList}
+              title="Open the demo plan this build produced"
+            />
+          )}
+        </div>
+      )}
+
+      {/* Plan ready → the explicit review/approve gate. The build stops here
+          (nothing in Grafana Cloud yet); the SE reviews the plan, refines it
+          with the assistant if needed, then approves to provision + go live. */}
+      {awaitingReview && p.planId && (
+        <Card className="p-5 border-[color:var(--color-accent-border)] bg-[var(--color-accent-bg)]/40">
+          <div className="flex items-start gap-3 flex-wrap">
+            <span className="grid place-items-center w-9 h-9 rounded-lg bg-[var(--color-accent-bg)] text-[var(--color-accent)] border border-[var(--color-accent-border)] shrink-0">
+              <CheckCircle2 size={18} />
+            </span>
+            <div className="flex-1 min-w-0">
+              <h3 className="m-0 text-sm font-medium text-[var(--color-text)]">Plan ready to review</h3>
+              <p className="mt-1 text-[13px] leading-relaxed text-[var(--color-text-muted)] max-w-2xl">
+                Research and planning are done — <strong className="text-[var(--color-text)]">nothing has been written to
+                Grafana Cloud</strong> yet. Approve to provision and go live, or refine the plan with the assistant first.
+              </p>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <Button size="sm" variant="primary" onClick={approveAndGoLive} disabled={approving}>
+                  {approving
+                    ? <><Loader2 size={12} className="animate-spin" /> Provisioning…</>
+                    : <><CheckCircle2 size={12} /> Approve &amp; go live</>}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={approving}
+                  onClick={() => assistant.openAssistant({ scope: { plan_id: p.planId ?? undefined }, seedPrompt: "Refine this plan before I approve it: " })}
+                >
+                  <Wand2 size={12} /> Refine with assistant
+                </Button>
+                <button
+                  type="button"
+                  onClick={() => navigate(`/plans/${p.planId}`)}
+                  className="ml-1 inline-flex items-center gap-1 text-[13px] text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                >
+                  <ClipboardList size={12} /> Review plan first
+                </button>
+              </div>
             </div>
-          )}
-        </div>
-        <div className="ml-auto flex items-center gap-2">
-          {p.status === "running" && (
-            <Button size="sm" variant="danger" onClick={onStop}>
-              <Square size={12} /> Stop
-            </Button>
-          )}
-          {(p.status === "done" || p.status === "failed" || p.status === "cancelled") && (
-            <>
-              <Button
-                size="sm"
-                variant="primary"
-                onClick={onReRunSame}
-                title="Smart resume: skip phases that already succeeded, reuse existing profile/plan."
-              >
-                <RefreshCw size={12} /> Re-run
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => {
-                  const ok = window.confirm(
-                    "Force restart will run the entire pipeline from scratch:\n\n"
-                    + "  • A NEW profile_id (research agent runs again)\n"
-                    + "  • A NEW plan_id (planner agent makes 8+ LLM calls)\n"
-                    + "  • Generate, Provision, KG-publish all re-run\n\n"
-                    + "Cost: ~5-10 minutes + several dollars in LLM tokens.\n\n"
-                    + "If you only want to retry a failed phase, click Re-run instead.\n\n"
-                    + "Continue with Force restart?",
-                  );
-                  if (!ok) return;
-                  const u = p.url;
-                  const c = p.company ?? undefined;
-                  const d = p.days;
-                  p.reset();
-                  if (u) void p.start({ url: u, company: c, days: d });
-                }}
-                title="Discard this pipeline and run from research again."
-                className="!text-[var(--color-warning)] hover:!bg-[var(--color-warning)]/10"
-              >
-                <AlertCircle size={12} /> Force restart
-              </Button>
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={onReset}
-                title="Back to the builds list."
-              >
-                <Sparkles size={12} /> New build
-              </Button>
-            </>
-          )}
-        </div>
-      </div>
+          </div>
+        </Card>
+      )}
 
       {/* Single horizontal "journey" card. Replaces the old MetricsStrip +
           PipelineStepper + 2-col PhaseRow/PhaseDetail layout. */}
@@ -800,12 +937,11 @@ function PipelineRunView({
             : state.status === "failed"  ? "failed"
             : state.status === "skipped" ? "skipped"
             : "pending";
-            const Icon =
-              state.status === "done"    ? CheckCircle2
-            : state.status === "running" ? Loader2
-            : state.status === "failed"  ? AlertCircle
-            : state.status === "skipped" ? MinusCircle
-            : MinusCircle;
+            // The column carries its PHASE glyph for identity; the
+            // .journey-step.{done|running|failed} CSS tints it by status and
+            // the bar shows progress. Running swaps in the self-animating
+            // StateRunning spinner as the "active" cue.
+            const glyphName: ClarionGlyphName = state.status === "running" ? "state-running" : phase;
             const durationLabel = m?.durationMs != null
               ? formatDuration(m.durationMs)
               : state.status === "skipped" ? "skipped"
@@ -833,10 +969,7 @@ function PipelineRunView({
                 >
                   <div className="journey-step-head">
                     <div className="journey-step-icon">
-                      <Icon
-                        size={14}
-                        className={state.status === "running" ? "animate-spin" : ""}
-                      />
+                      <ClarionGlyph name={glyphName} size={15} />
                     </div>
                     <div className="min-w-0">
                       <div className="journey-step-no">{num}</div>

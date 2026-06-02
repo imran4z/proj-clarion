@@ -2,9 +2,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import { useMemo, useState, type ReactNode } from "react";
 import {
-  ArrowLeft, Loader2, Trash2, Sparkles, Activity,
-  ChevronRight, ClipboardList, Globe, Check, Bot,
+  Loader2, Trash2, Sparkles, Activity, Layers, FlaskConical,
+  ChevronRight, ClipboardList, Globe, Check, X, Wand2, FileDown,
+  ScrollText, CheckCircle2, Eye,
 } from "lucide-react";
+import { downloadDiscoveryBrief } from "@/lib/discoveryBrief";
 
 import {
   listProfiles, getProfile, deleteProfile, listPipelines,
@@ -20,6 +22,10 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CrumbChip } from "@/components/CrumbChip";
 import { DemoSessionCard } from "@/components/DemoSessionCard";
 import { PlanTabs } from "@/components/plan/PlanTabs";
+import { PageHeader } from "@/components/PageHeader";
+import { StatKpi } from "@/components/StatKpi";
+import { AssistantSectionButton, AssistantCtaCard } from "@/components/AssistantCta";
+import { ClarionEmptyArt } from "@/components/icons/ClarionIcons";
 import { Pagination } from "@/components/Pagination";
 import { ProfileKpiCard, deriveDemoStatus } from "@/components/ProfileKpiCard";
 import { useAssistant } from "@/lib/AssistantContext";
@@ -100,27 +106,47 @@ export function ProfilesListPage() {
     }
   }
 
+  // Summary counts for the KPI row. Ready / in-review derive from each
+  // profile's plans (same logic as the card status pill).
+  const summary = useMemo(() => {
+    let ready = 0;
+    let review = 0;
+    let synth = 0;
+    for (const p of ordered) {
+      const status = deriveDemoStatus(p, plansByProfile.get(p.profile_id) ?? []);
+      if (status.tone === "ready") ready++;
+      else if (status.tone === "in-review") review++;
+      synth += p.synthesized_flag_count ?? 0;
+    }
+    return { ready, review, synth };
+  }, [ordered, plansByProfile]);
+
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Profiles</h1>
-          <p className="text-[var(--color-text-muted)] mt-1 text-sm">
-            CompanyProfiles produced by the research agent.{" "}
-            <span className="text-[var(--color-text-faint)] tabular-nums">
-              {ordered.length} total
-            </span>
-          </p>
+      <PageHeader
+        eyebrow="Profiles"
+        title="Researched companies."
+        lede="CompanyProfiles produced by the research agent. Open one to inspect its signals or extend it with the assistant."
+        actions={
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => setAddOpen(true)}
+            title="Research a new company URL, the resulting CompanyProfile lands here when research completes"
+          >
+            <Sparkles size={12} /> Add profile
+          </Button>
+        }
+      />
+
+      {!profiles.isLoading && ordered.length > 0 && (
+        <div className="grid gap-3 grid-cols-2 lg:grid-cols-4">
+          <StatKpi label="Profiles" value={ordered.length} hint="researched" icon={ScrollText} tone="accent" />
+          <StatKpi label="Ready to demo" value={summary.ready} hint="provisioned plan" icon={CheckCircle2} tone="live" />
+          <StatKpi label="In review" value={summary.review} hint="awaiting approval" icon={Eye} tone="info" />
+          <StatKpi label="Synth flagged" value={summary.synth} hint="verify before demo" icon={FlaskConical} tone="warning" />
         </div>
-        <Button
-          variant="primary"
-          size="sm"
-          onClick={() => setAddOpen(true)}
-          title="Research a new company URL, the resulting CompanyProfile lands here when research completes"
-        >
-          <Sparkles size={12} /> Add profile
-        </Button>
-      </div>
+      )}
 
       <AddProfileModal
         open={addOpen}
@@ -140,7 +166,7 @@ export function ProfilesListPage() {
       ) : ordered.length === 0 ? (
         <Card>
           <div className="p-12 text-center">
-            <Sparkles size={28} className="text-[var(--color-text-faint)] mx-auto mb-3" />
+            <ClarionEmptyArt name="profiles" className="mb-4 text-[var(--color-text-muted)]" />
             <div className="text-sm font-medium">No profiles yet</div>
             <div className="text-xs text-[var(--color-text-muted)] mt-1 max-w-sm mx-auto">
               Use <span className="font-mono text-[var(--color-accent)]">Add profile</span> above, or run{" "}
@@ -372,6 +398,8 @@ export function ProfileDetailPage() {
         phase: "plan",
         url,
         profile_id: profileId,
+        // Stop at the plan — nothing provisions until the SE approves it.
+        stop_after_phase: "plan",
         // No parent_pipeline_id, this is a fresh build, not a resume.
       });
       navigate("/new");
@@ -397,11 +425,6 @@ export function ProfileDetailPage() {
 
   return (
     <div className="space-y-6">
-      {/* Back link, own row, matches the Plan detail page rhythm. */}
-      <Link to="/profiles" className="text-sm text-[var(--color-text-muted)] hover:text-[var(--color-text)] inline-flex items-center gap-1">
-        <ArrowLeft size={14} /> Profiles
-      </Link>
-
       {deleteError && (
         <Card className="p-3 text-xs text-[var(--color-danger)] border-[var(--color-danger)]/30 bg-[var(--color-danger)]/5">
           {deleteError}
@@ -566,23 +589,25 @@ function ProfileDetailBody({
 
   // Tab strip. Claims tab only surfaces when there's something to review
   // (the warning-tone tab pill is loud; suppress it on clean profiles).
+  // "Extend research" is gone — that's now the Research-agent assistant
+  // panel in the hero's right column.
+  // Pain signals + tech stack + synth now live as hero cards in the left
+  // column (matching the design-rework profile detail), so the tab strip
+  // below carries only the supplementary surfaces.
   const tabs = useMemo(() => {
     const overviewCount = channelCount + entityCount + priorityCount;
     const list: { id: ProfileTabId; label: string; count?: number }[] = [
-      { id: "overview", label: "Overview",       count: overviewCount },
-      { id: "pain",     label: "Pain signals",   count: painCount },
-      { id: "tech",     label: "Tech stack",     count: techCount },
+      { id: "overview", label: "Overview", count: overviewCount },
     ];
     if (claimsCount > 0) {
       list.push({ id: "claims", label: "Claims to review", count: claimsCount });
     }
     list.push(
       { id: "related", label: "Related" },
-      { id: "extend",  label: "Extend research" },
       { id: "raw",     label: "Raw JSON" },
     );
     return list;
-  }, [channelCount, entityCount, priorityCount, painCount, techCount, claimsCount]);
+  }, [channelCount, entityCount, priorityCount, claimsCount]);
 
   return (
     <div className="space-y-6">
@@ -599,16 +624,25 @@ function ProfileDetailBody({
         onJumpToPlans={() => navigate(`/plans?profile=${encodeURIComponent(profileId)}`)}
       />
 
-      {/* Hero grid: Company snapshot (1.4fr) + right column with
-          DemoSessionCard + Profile stats (1fr). Matches PlanDetailBody
-          shape so the SE sees the same demo-control surface whether
-          they're on a profile or a plan. The DemoSessionCard binds to
-          the most recent plan from this profile — most profiles have
-          one plan; when there are multiple, a small annotation marks
-          which one the controls are wired to. */}
-      <div className="grid gap-5 xl:grid-cols-[1.4fr_1fr] items-start">
-        <CompanySnapshotPanel data={data} />
-        <div className="space-y-5">
+      {/* Gradient KPI row directly under the header — Pain / Tech / Synth /
+          Plans (counts, not arrays). */}
+      <div className="grid gap-3 grid-cols-2 lg:grid-cols-4">
+        <StatKpi label="Pain signals" value={painCount} icon={Activity} tone="accent" />
+        <StatKpi label="Tech signals" value={techCount} icon={Layers} tone="info" />
+        <StatKpi label="Synth flagged" value={claimsCount} icon={FlaskConical} tone="warning" hint="verify before demo" />
+        <StatKpi label="Plans" value={profilePlans.length} icon={ClipboardList} tone="signal" onClick={() => navigate(`/plans?profile=${encodeURIComponent(profileId)}`)} />
+      </div>
+
+      {/* Two-column body (~1.55fr / 1fr). LEFT is the subject: the company
+          snapshot. RIGHT is the primary action (live demo) + the in-context
+          Research-agent assistant — the shared detail-page skeleton. */}
+      <div className="grid gap-5 xl:grid-cols-[1.55fr_1fr] items-start">
+        <div className="space-y-5 min-w-0">
+          <CompanySnapshotPanel data={data} />
+          <PainSignalsCard data={data} profileId={profileId} />
+          <TechSynthCard data={data} profileId={profileId} />
+        </div>
+        <div className="space-y-5 min-w-0">
           {profilePlans.length > 0 && (
             <div>
               {profilePlans.length > 1 && (
@@ -628,11 +662,11 @@ function ProfileDetailBody({
               <DemoSessionCard planId={profilePlans[0].plan_id} />
             </div>
           )}
-          <ProfileContentsStats
-            channels={channelCount}
-            entities={entityCount}
-            pain={painCount}
-            tech={techCount}
+          <AssistantCtaCard
+            scope={{ profile_id: profileId }}
+            title="Research agent"
+            body="Tell the agent what's missing or wrong — it extends this profile in place (additive only), then offers to re-run the plan so the new entities reach your demo."
+            cta="Open assistant"
           />
         </div>
       </div>
@@ -645,13 +679,8 @@ function ProfileDetailBody({
 
       <div role="tabpanel" aria-label={activeTab}>
         {activeTab === "overview" && <OverviewTab data={data} />}
-        {activeTab === "pain"     && <PainSignalsTab data={data} />}
-        {activeTab === "tech"     && <TechStackTab data={data} />}
         {activeTab === "claims"   && <ClaimsTab profileId={profileId} data={data} />}
         {activeTab === "related"  && <RelatedProfileContent profileId={profileId} />}
-        {activeTab === "extend"   && (
-          <ExtendWithAssistantPanel profileId={profileId} />
-        )}
         {activeTab === "raw"      && <RawJsonTab data={data} />}
       </div>
     </div>
@@ -700,132 +729,144 @@ function ProfileHeader({
   }
   const blurb = blurbParts.join(" · ");
 
+  // Demo-readiness for the eyebrow, derived from the plans built off
+  // this profile (most-actionable first). Mirrors deriveDemoStatus.
+  const states = new Set(profilePlans.map((p) => p.review_state));
+  const statusLabel =
+    states.has("provisioned")            ? "ready to demo" :
+    states.has("approved_for_provision") ? "approved" :
+    states.has("se_reviewed")            ? "in review" :
+    profilePlans.length > 0              ? "drafted plan" :
+                                           "researched";
+
   return (
-    <div className="flex items-start gap-6 flex-wrap">
-      <div className="flex-1 min-w-[280px]">
-        <div className="text-[11px] font-mono uppercase tracking-[0.08em] text-[var(--color-text-faint)]">
-          Profile
-          <span className="ml-2 text-[var(--color-text-faint)]">
-            {profileId}
-          </span>
-        </div>
-        <h1 className="mt-1 text-[32px] font-medium tracking-tight leading-tight text-[var(--color-text)]">
-          {companyName}.
-        </h1>
-        {blurb && (
-          <p className="mt-3 text-[var(--color-text-muted)] text-[15px] leading-relaxed max-w-2xl">
-            {blurb}
-            {co.legal_name && co.legal_name !== co.name && (
-              <span className="text-[var(--color-text-faint)]"> · legal name {co.legal_name}</span>
+    <div className="space-y-3">
+      <PageHeader
+        back={{ to: "/profiles", label: "Profiles" }}
+        eyebrow={
+          <>
+            Profile · {statusLabel}
+            <span className="ml-2 normal-case text-[var(--color-text-faint)]">{profileId}</span>
+          </>
+        }
+        title={companyName}
+        lede={
+          blurb ? (
+            <>
+              {blurb}
+              {co.legal_name && co.legal_name !== co.name && (
+                <span className="text-[var(--color-text-faint)]"> · legal name {co.legal_name}</span>
+              )}
+            </>
+          ) : undefined
+        }
+        actions={
+          <>
+            {profilePlans.length === 1 && (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => onJumpToPlan(profilePlans[0].plan_id)}
+                title={`Open plan ${profilePlans[0].plan_id_short} (${profilePlans[0].review_state})`}
+              >
+                <ClipboardList size={12} /> View plan
+                <span className="ml-1 text-[10px] text-[var(--color-text-faint)]">
+                  {profilePlans[0].review_state.replace(/_/g, " ")}
+                </span>
+              </Button>
             )}
-          </p>
-        )}
-
-        {/* Crumb chips: source URL (external) + primary industry +
-            business model. Each chip reads as a real "click me"
-            button; the URL one opens the company in a new tab, the
-            others stay decorative for now (no by-industry view yet). */}
-        <div className="mt-4 flex items-center gap-2 flex-wrap">
-          {co.primary_url && (
-            <CrumbChip
-              to={co.primary_url}
-              label="website"
-              value={hostOfUrl(co.primary_url)}
-              icon={Globe}
-              external
-              title="Open the company website in a new tab"
-            />
-          )}
-          {tax.primary_industry && (
-            <span
-              className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md font-mono bg-[var(--color-canvas-elev1)] border border-[var(--color-border)]"
-              title="Primary industry classification (research agent)"
+            {profilePlans.length > 1 && (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={onJumpToPlans}
+                title={`This profile has ${profilePlans.length} plans. Open the Plans list filtered to this profile.`}
+              >
+                <ClipboardList size={12} /> View plans
+                <span className="ml-1 text-[10px] text-[var(--color-text-faint)] font-mono tabular-nums">
+                  {profilePlans.length}
+                </span>
+              </Button>
+            )}
+            {latestPipeline && (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={onViewLatestBuild}
+                title={`Open the latest build for this profile (${latestPipeline.pipeline_id} · ${latestPipeline.status})`}
+              >
+                <Activity size={12} /> View latest build
+                <span className="ml-1 text-[10px] text-[var(--color-text-faint)]">
+                  {latestPipeline.status}
+                </span>
+              </Button>
+            )}
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => downloadDiscoveryBrief(data)}
+              title="Download a sales-ready Discovery Brief (HTML) — findings + discovery questions to share with the AE or hand to a sales AI."
             >
-              <span className="uppercase tracking-[0.06em] text-[10px] text-[var(--color-text-faint)]">
-                industry
-              </span>
-              <span className="text-[11px] text-[var(--color-text)]">
-                {tax.primary_industry}
-              </span>
-            </span>
-          )}
-          {tax.business_model && (
-            <Badge tone="accent">{tax.business_model}</Badge>
-          )}
-        </div>
-      </div>
+              <FileDown size={12} /> Export brief
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => assistant.openAssistant({ scope: { profile_id: profileId } })}
+              title="Open the Clarion assistant scoped to this profile (⌘J)."
+            >
+              <Wand2 size={12} /> Refine with assistant
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={onBuildFromProfile}
+              disabled={building}
+              title="Start a new pipeline that skips research (uses this profile) and goes straight to plan → … → kg-publish"
+            >
+              {building ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : (
+                <Sparkles size={12} />
+              )}
+              Build demo
+            </Button>
+            <Button variant="danger" size="sm" onClick={onDelete}>
+              <Trash2 size={12} /> Delete
+            </Button>
+          </>
+        }
+      />
 
-      {/* Action bar, right-aligned. Wraps under the title on narrow
-          widths via the parent's `flex-wrap`. */}
+      {/* Crumb chips: source URL (external) + primary industry +
+          business model. */}
       <div className="flex items-center gap-2 flex-wrap">
-        {profilePlans.length === 1 && (
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => onJumpToPlan(profilePlans[0].plan_id)}
-            title={`Open plan ${profilePlans[0].plan_id_short} (${profilePlans[0].review_state})`}
-          >
-            <ClipboardList size={12} /> View plan
-            <span className="ml-1 text-[10px] text-[var(--color-text-faint)]">
-              {profilePlans[0].review_state.replace(/_/g, " ")}
-            </span>
-          </Button>
+        {co.primary_url && (
+          <CrumbChip
+            to={co.primary_url}
+            label="website"
+            value={hostOfUrl(co.primary_url)}
+            icon={Globe}
+            external
+            title="Open the company website in a new tab"
+          />
         )}
-        {profilePlans.length > 1 && (
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={onJumpToPlans}
-            title={`This profile has ${profilePlans.length} plans. Open the Plans list filtered to this profile.`}
+        {tax.primary_industry && (
+          <span
+            className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md font-mono bg-[var(--color-canvas-elev1)] border border-[var(--color-border)]"
+            title="Primary industry classification (research agent)"
           >
-            <ClipboardList size={12} /> View plans
-            <span className="ml-1 text-[10px] text-[var(--color-text-faint)] font-mono tabular-nums">
-              {profilePlans.length}
+            <span className="uppercase tracking-[0.06em] text-[10px] text-[var(--color-text-faint)]">
+              industry
             </span>
-          </Button>
-        )}
-        {latestPipeline && (
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={onViewLatestBuild}
-            title={`Open the latest build for this profile (${latestPipeline.pipeline_id} · ${latestPipeline.status})`}
-          >
-            <Activity size={12} /> View latest build
-            <span className="ml-1 text-[10px] text-[var(--color-text-faint)]">
-              {latestPipeline.status}
+            <span className="text-[11px] text-[var(--color-text)]">
+              {tax.primary_industry}
             </span>
-          </Button>
+          </span>
         )}
-        {/* Entry into the Clarion assistant, scoped to this profile.
-            The assistant extends the profile's research, refines plans,
-            runs builds, and drives demos — the conversational path that
-            replaced the old in-page "Extend research" chat. */}
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={() => assistant.openAssistant({ scope: { profile_id: profileId } })}
-          title="Open the Clarion assistant scoped to this profile (⌘J)."
-        >
-          <Bot size={12} /> Refine with assistant
-        </Button>
-        <Button
-          variant="primary"
-          size="sm"
-          onClick={onBuildFromProfile}
-          disabled={building}
-          title="Start a new pipeline that skips research (uses this profile) and goes straight to plan → … → kg-publish"
-        >
-          {building ? (
-            <Loader2 size={12} className="animate-spin" />
-          ) : (
-            <Sparkles size={12} />
-          )}
-          Build demo
-        </Button>
-        <Button variant="danger" size="sm" onClick={onDelete}>
-          <Trash2 size={12} /> Delete
-        </Button>
+        {tax.business_model && (
+          <Badge tone="accent">{tax.business_model}</Badge>
+        )}
       </div>
     </div>
   );
@@ -927,44 +968,6 @@ function CompanySnapshotPanel({ data }: { data: ProfileShape }) {
   );
 }
 
-// ─── Profile contents stats, hero RIGHT card ───────────────────────
-//
-// Mirrors PlanContentsStats: a 4-cell counts grid. The four numbers
-// the SE eyes look for to decide "is this profile rich enough to
-// build a plan from yet". Channels / Entities / Pain / Tech.
-
-function ProfileContentsStats({
-  channels, entities, pain, tech,
-}: {
-  channels: number; entities: number; pain: number; tech: number;
-}) {
-  const stats: { label: string; value: number }[] = [
-    { label: "Channels",     value: channels },
-    { label: "Entities",     value: entities },
-    { label: "Pain signals", value: pain     },
-    { label: "Tech stack",   value: tech     },
-  ];
-  return (
-    <Card className="p-5">
-      <h3 className="text-sm font-medium text-[var(--color-text)] m-0 mb-3">
-        Profile contents
-      </h3>
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {stats.map((s) => (
-          <div key={s.label}>
-            <div className="text-[10px] font-mono uppercase tracking-[0.06em] text-[var(--color-text-faint)]">
-              {s.label}
-            </div>
-            <div className="mt-1 text-[22px] font-medium tabular-nums text-[var(--color-text)]">
-              {s.value.toLocaleString()}
-            </div>
-          </div>
-        ))}
-      </div>
-    </Card>
-  );
-}
-
 // ─── Tab bodies ────────────────────────────────────────────────────
 //
 // Each body is a tiny composition of SectionCards; the heavy lifting
@@ -1045,62 +1048,122 @@ function OverviewTab({ data }: { data: ProfileShape }) {
   );
 }
 
-function PainSignalsTab({ data }: { data: ProfileShape }) {
+/** Pain signals — hero card for the profile left column. Numbered list,
+ *  severity badge, and source provenance (mono) on the right, matching
+ *  the design-rework prototype. */
+function PainSignalsCard({ data, profileId }: { data: ProfileShape; profileId: string }) {
   const rows = data.pain_signals ?? [];
-  if (rows.length === 0) {
-    return (
-      <Card className="p-8 text-center text-[var(--color-text-faint)] text-sm">
-        No pain signals on this profile yet.
-      </Card>
-    );
-  }
+  if (rows.length === 0) return null;
+  const vertical = data.industry_taxonomy?.primary_industry;
   return (
-    <SectionCard title="Pain signals" count={rows.length}>
-      <ul className="space-y-2.5">
-        {rows.map((p, i) => (
-          <li key={i} className="text-sm flex items-start gap-2">
-            <Badge
-              tone={
-                p.severity === "high" ? "danger"
-                : p.severity === "medium" ? "warning"
-                : "neutral"
-              }
-              className="shrink-0 mt-0.5"
+    <Card className="p-5">
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <div className="flex items-center gap-2.5">
+          <Activity size={15} className="text-[var(--color-accent)]" />
+          <h3 className="text-sm font-medium text-[var(--color-text)] m-0">Pain signals</h3>
+          <span className="font-mono text-[11px] text-[var(--color-text-faint)] tabular-nums">{rows.length}</span>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {vertical && (
+            <span className="font-mono text-[11px] text-[var(--color-text-faint)] truncate max-w-[160px]">{vertical}</span>
+          )}
+          <AssistantSectionButton
+            scope={{ profile_id: profileId }}
+            seed="Add more pain signals for this company — what operational or customer-facing problems are they likely facing?"
+            title="Add pain signals with the assistant"
+          />
+        </div>
+      </div>
+      <div>
+        {rows.map((p, i) => {
+          const cite = p.citations?.[0];
+          return (
+            <div
+              key={i}
+              className="flex items-start gap-3 py-2.5 border-t border-[var(--color-border)] first:border-0 first:pt-0"
             >
-              {p.severity ?? "?"}
-            </Badge>
-            <span className="text-[var(--color-text-muted)] leading-relaxed">
-              {p.pain}
-            </span>
-          </li>
-        ))}
-      </ul>
-    </SectionCard>
+              <span className="font-mono text-[11px] text-[var(--color-text-faint)] w-5 shrink-0 mt-0.5 tabular-nums">
+                {String(i + 1).padStart(2, "0")}
+              </span>
+              <span className="flex-1 text-[13px] text-[var(--color-text)] leading-snug">
+                {p.pain}
+              </span>
+              {p.severity && (
+                <Badge
+                  tone={p.severity === "high" ? "danger" : p.severity === "medium" ? "warning" : "neutral"}
+                  className="shrink-0"
+                >
+                  {p.severity}
+                </Badge>
+              )}
+              {cite && (
+                <span className="font-mono text-[10.5px] text-[var(--color-text-faint)] shrink-0 mt-1 max-w-[130px] truncate" title={cite}>
+                  {hostOfUrl(cite)}
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </Card>
   );
 }
 
-function TechStackTab({ data }: { data: ProfileShape }) {
-  const rows = data.tech_stack_signals ?? [];
-  if (rows.length === 0) {
-    return (
-      <Card className="p-8 text-center text-[var(--color-text-faint)] text-sm">
-        No tech stack signals on this profile yet.
-      </Card>
-    );
-  }
+/** Tech stack + synthesised flags — one hero card (sans-serif chips for
+ *  the stack, warning chips for the AI-synthesised values to verify). */
+function TechSynthCard({ data, profileId }: { data: ProfileShape; profileId: string }) {
+  const tech = data.tech_stack_signals ?? [];
+  const synth = data.synthesized_flags ?? [];
+  if (tech.length === 0 && synth.length === 0) return null;
   return (
-    <SectionCard title="Tech stack" count={rows.length}>
-      <ul className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2 text-sm">
-        {rows.map((t, i) => (
-          <li key={i} className="flex items-center gap-2">
-            <Badge tone={t.confidence === "high" ? "success" : t.confidence === "medium" ? "info" : "neutral"}>
-              {t.component_type}
-            </Badge>
-            <span className="font-medium truncate">{t.vendor_or_product}</span>
-          </li>
-        ))}
-      </ul>
-    </SectionCard>
+    <Card className="p-5">
+      {tech.length > 0 && (
+        <>
+          <div className="flex items-center gap-2.5 mb-3">
+            <Layers size={15} className="text-[var(--color-info)]" />
+            <h3 className="text-sm font-medium text-[var(--color-text)] m-0">Tech stack</h3>
+            <span className="font-mono text-[11px] text-[var(--color-text-faint)] tabular-nums">{tech.length}</span>
+            <AssistantSectionButton
+              scope={{ profile_id: profileId }}
+              seed="Add tech-stack signals for this company — what platforms, databases, observability and cloud tools do they likely run?"
+              title="Add tech-stack signals with the assistant"
+              className="ml-auto"
+            />
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {tech.map((t, i) => (
+              <span
+                key={i}
+                className="inline-flex items-center h-7 px-2.5 rounded-md text-xs bg-[var(--color-canvas-elev2)] border border-[var(--color-border)] text-[var(--color-text)]"
+                title={t.component_type ?? undefined}
+              >
+                {t.vendor_or_product ?? t.component_type}
+              </span>
+            ))}
+          </div>
+        </>
+      )}
+      {synth.length > 0 && (
+        <div className={cn(tech.length > 0 && "mt-5 pt-5 border-t border-[var(--color-border)]")}>
+          <div className="flex items-center gap-2.5 mb-3">
+            <FlaskConical size={15} className="text-[var(--color-warning)]" />
+            <h3 className="text-sm font-medium text-[var(--color-text)] m-0">Synthesised — verify before demo</h3>
+            <span className="font-mono text-[11px] text-[var(--color-text-faint)] tabular-nums">{synth.length}</span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {synth.map((f, i) => (
+              <span
+                key={i}
+                className="inline-flex items-center h-7 px-2.5 rounded-md text-xs bg-[var(--color-warning)]/10 border border-[var(--color-warning)]/30 text-[var(--color-warning)]"
+                title={f.rationale ?? f.field_path ?? undefined}
+              >
+                {f.claim ?? f.field_path}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -1115,17 +1178,18 @@ function ClaimsTab({
   data: ProfileShape;
 }) {
   const qc = useQueryClient();
+  const assistant = useAssistant();
   const rows = data.synthesized_flags ?? [];
-  // Track which row is currently being accepted so we can disable just
-  // its button (not all of them) while the request is in flight.
-  const [busyPath, setBusyPath] = useState<string | null>(null);
+  // Track which row + decision is in flight so we can disable + spinner
+  // just that one button.
+  const [busy, setBusy] = useState<{ path: string; decision: "accept" | "dismiss" } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const acceptMut = useMutation({
-    mutationFn: (field_path: string) => {
-      setBusyPath(field_path);
+  const mut = useMutation({
+    mutationFn: ({ field_path, decision }: { field_path: string; decision: "accept" | "dismiss" }) => {
+      setBusy({ path: field_path, decision });
       setError(null);
-      return acceptProfileClaim(profileId, field_path, "accept");
+      return acceptProfileClaim(profileId, field_path, decision);
     },
     onSuccess: () => {
       // Profile detail re-renders with one fewer flag; audit page picks
@@ -1134,11 +1198,11 @@ function ClaimsTab({
       qc.invalidateQueries({ queryKey: ["profiles"] });
       qc.invalidateQueries({ queryKey: ["profile-audit", profileId] });
       qc.invalidateQueries({ queryKey: ["profile-audit-global"] });
-      setBusyPath(null);
+      setBusy(null);
     },
     onError: (e: Error) => {
       setError(e.message);
-      setBusyPath(null);
+      setBusy(null);
     },
   });
 
@@ -1156,6 +1220,11 @@ function ClaimsTab({
       count={rows.length}
       tone="warning"
     >
+      <p className="-mt-1 mb-3 text-xs text-[var(--color-text-muted)]">
+        Values the research agent guessed. <strong>Keep</strong> the ones that look
+        right, <strong>dismiss</strong> the wrong ones, or hand a tricky one to the
+        assistant to verify and correct.
+      </p>
       {error && (
         <div className="mb-3 px-3 py-2 rounded-md text-xs border border-[var(--color-danger)]/30 bg-[var(--color-danger)]/10 text-[var(--color-danger)]">
           {error}
@@ -1164,13 +1233,15 @@ function ClaimsTab({
       <ul className="divide-y divide-[var(--color-border)]">
         {rows.map((f, i) => {
           const path = f.field_path ?? "";
-          const busy = busyPath === path;
+          const acceptBusy = busy?.path === path && busy.decision === "accept";
+          const dismissBusy = busy?.path === path && busy.decision === "dismiss";
+          const rowBusy = busy?.path === path;
           return (
             <li
               key={`${path}-${i}`}
-              className="py-3 first:pt-0 last:pb-0 flex items-start gap-3"
+              className="py-3 first:pt-0 last:pb-0 flex items-start gap-3 flex-wrap"
             >
-              <div className="flex-1 min-w-0">
+              <div className="flex-1 min-w-[220px]">
                 <div className="font-mono text-xs text-[var(--color-warning)]">
                   {f.field_path}
                 </div>
@@ -1183,21 +1254,39 @@ function ClaimsTab({
                   </div>
                 )}
               </div>
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => acceptMut.mutate(path)}
-                disabled={busy || !path}
-                title="Accept this claim. The value stays in the profile; the review flag is cleared."
-                className="shrink-0"
-              >
-                {busy ? (
-                  <Loader2 size={12} className="animate-spin" />
-                ) : (
-                  <Check size={12} />
-                )}
-                Accept
-              </Button>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => mut.mutate({ field_path: path, decision: "accept" })}
+                  disabled={rowBusy || !path}
+                  title="Keep this value. The review flag is cleared."
+                >
+                  {acceptBusy ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+                  Keep
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => mut.mutate({ field_path: path, decision: "dismiss" })}
+                  disabled={rowBusy || !path}
+                  title="Dismiss — drop this synthesized value from the profile."
+                >
+                  {dismissBusy ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
+                  Dismiss
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => assistant.openAssistant({
+                    scope: { profile_id: profileId },
+                    seedPrompt: `Verify and correct this synthesized value — ${f.field_path}: "${f.claim}". Research it, then update the profile with the right value (or remove it if it doesn't apply).`,
+                  })}
+                  title="Hand this claim to the assistant to research + correct."
+                >
+                  <Wand2 size={12} /> Fix
+                </Button>
+              </div>
             </li>
           );
         })}
@@ -1467,67 +1556,3 @@ function SectionCard({
   );
 }
 
-
-/** Entry point into the global Clarion assistant, scoped to this
- *  profile. Replaces the old in-page ExtendProfilePanel chat: extending
- *  a profile's research is now one of the things the assistant does (it
- *  calls the extend_profile tool, then can re-run the plan so the new
- *  entities reach the live demo), so the profile page points at the
- *  assistant rather than carrying a second, divergent chat surface.
- *
- *  Seeding a prompt prefills the assistant's compose box — the SE can
- *  edit it before sending or clear it entirely. */
-function ExtendWithAssistantPanel({ profileId }: { profileId: string }) {
-  const assistant = useAssistant();
-
-  const EXAMPLES = [
-    "Add the industries they support",
-    "We're missing their EMEA region channels",
-    "Add their main competitors and recent acquisitions",
-  ];
-
-  function open(seed?: string) {
-    assistant.openAssistant({ scope: { profile_id: profileId }, seedPrompt: seed });
-  }
-
-  return (
-    <Card className="p-6">
-      <div className="flex items-start gap-3">
-        <span className="inline-flex items-center justify-center w-9 h-9 rounded-lg bg-[var(--color-accent-bg)] border border-[var(--color-accent-border)] shrink-0">
-          <Bot size={18} className="text-[var(--color-accent)]" />
-        </span>
-        <div className="flex-1 min-w-0">
-          <h2 className="text-sm font-medium text-[var(--color-text)] m-0">
-            Extend research with the assistant
-          </h2>
-          <p className="mt-1.5 text-sm text-[var(--color-text-muted)] leading-relaxed max-w-2xl">
-            Tell the Clarion assistant what&rsquo;s missing or wrong and it extends
-            this profile in place — additive only — then offers to re-run the plan so
-            the new entities reach your demo. The same conversation also refines plans,
-            runs builds, and drives demos, so the whole loop stays in one place.
-          </p>
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            <Button variant="primary" size="sm" onClick={() => open()}>
-              <Bot size={12} /> Open assistant
-            </Button>
-            <span className="text-[11px] text-[var(--color-text-faint)]">
-              or start from an example:
-            </span>
-          </div>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {EXAMPLES.map((ex) => (
-              <button
-                key={ex}
-                type="button"
-                onClick={() => open(ex)}
-                className="text-left text-xs px-2.5 py-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-canvas-elev1)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:border-[var(--color-border-strong)] transition-colors"
-              >
-                {ex}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-    </Card>
-  );
-}

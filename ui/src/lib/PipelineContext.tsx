@@ -25,7 +25,7 @@ import {
 import type { ReactNode } from "react";
 
 import {
-  createPipeline, getPipeline, getPipelineEvents, getPipelinePhases, listPipelines,
+  createPipeline, continuePipeline, getPipeline, getPipelineEvents, getPipelinePhases, listPipelines,
   runPipelineFromPhase, streamPipeline,
   type PipelineEvent, type PipelinePhase, type PipelineSummary,
   PIPELINE_PHASES,
@@ -125,6 +125,7 @@ interface PipelineContextValue extends PipelineUiState {
     days?: number;
     volume_per_day?: number;
     stop_after_phase?: PipelinePhase;
+    allow_duplicate?: boolean;
   }) => Promise<string>;
   /** Resume from a specific phase. New pipeline_id; parent linkage on the server. */
   startFromPhase: (body: {
@@ -137,7 +138,15 @@ interface PipelineContextValue extends PipelineUiState {
     plan_id?: string;
     parent_pipeline_id?: string;
     volume_per_day?: number;
+    stop_after_phase?: PipelinePhase;
   }) => Promise<string>;
+  /** Continue a build IN PLACE — approve + provision (or resume from any
+   *  later phase) on the SAME pipeline_id. No second build row: the build
+   *  just moves through the remaining phases. Re-follows the same id. */
+  continueInPlace: (
+    pipelineId: string,
+    opts?: { startingPhase?: PipelinePhase },
+  ) => Promise<string>;
   /** Load any past pipeline (running, done, failed) into the live view
    *  by snapshot-replaying its events from the server. If the pipeline
    *  is still running, switches to live tail after the replay. */
@@ -184,6 +193,11 @@ export function PipelineProvider({ children }: { children: ReactNode }) {
             company: ev.company,
             days: ev.days,
             startedAt: prev.startedAt ?? at,
+            // A build resumed in place (approve → provision on the SAME
+            // pipeline) replays an earlier `pipeline:done`, which set
+            // finishedAt. Clearing it on the resume's `started` keeps the
+            // final finishedAt accurate (and is a no-op for fresh builds).
+            finishedAt: undefined,
           };
         }
         const forceTerminate = (s: PhaseStatus) => forceTerminatePhases(prev.phases, s, at);
@@ -312,6 +326,19 @@ export function PipelineProvider({ children }: { children: ReactNode }) {
     });
   }, [applyEvent, reconcileTerminal]);
 
+  /** Safety net: while we believe a pipeline is running, poll the
+   *  server's canonical status every 6s and converge if it has gone
+   *  terminal — e.g. the build was reaped as an orphan, or the SSE
+   *  closed before delivering the terminal event. Harmless for a
+   *  genuinely-live build (getPipeline returns "running" → no-op), so
+   *  the spinner can never outlive the actual build. */
+  useEffect(() => {
+    if (state.status !== "running" || !state.pipelineId) return;
+    const id = state.pipelineId;
+    const t = setInterval(() => { void reconcileTerminal(id); }, 6_000);
+    return () => clearInterval(t);
+  }, [state.status, state.pipelineId, reconcileTerminal]);
+
   /** App-mount: resume an in-flight pipeline if there is one. We check
    *  localStorage first (sticky pointer for the user's last build) and
    *  fall back to whatever the server reports as still running. */
@@ -366,6 +393,7 @@ export function PipelineProvider({ children }: { children: ReactNode }) {
     days?: number;
     volume_per_day?: number;
     stop_after_phase?: PipelinePhase;
+    allow_duplicate?: boolean;
   }) => {
     const summary = await createPipeline(body);
     follow(summary.pipeline_id, {
@@ -383,8 +411,24 @@ export function PipelineProvider({ children }: { children: ReactNode }) {
     profile_path?: string;
     plan_id?: string;
     parent_pipeline_id?: string;
+    stop_after_phase?: PipelinePhase;
   }) => {
     const summary = await runPipelineFromPhase(body);
+    follow(summary.pipeline_id, {
+      startedAt: summary.started_at ? new Date(summary.started_at).getTime() : undefined,
+    });
+    return summary.pipeline_id;
+  }, [follow]);
+
+  const continueInPlace = useCallback(async (
+    pipelineId: string,
+    opts?: { startingPhase?: PipelinePhase },
+  ) => {
+    const summary = await continuePipeline(pipelineId, {
+      starting_phase: opts?.startingPhase ?? "approve",
+    });
+    // Same pipeline_id — re-follow it. SSE replays from event 0, so the
+    // view rebuilds the full journey then live-tails the new phases.
     follow(summary.pipeline_id, {
       startedAt: summary.started_at ? new Date(summary.started_at).getTime() : undefined,
     });
@@ -485,7 +529,7 @@ export function PipelineProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <Ctx.Provider value={{ ...state, start, startFromPhase, loadPipeline, smartResume, reconcile: reconcileTerminal, reset }}>
+    <Ctx.Provider value={{ ...state, start, startFromPhase, continueInPlace, loadPipeline, smartResume, reconcile: reconcileTerminal, reset }}>
       {children}
     </Ctx.Provider>
   );

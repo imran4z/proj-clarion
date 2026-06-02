@@ -1,16 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useParams, useSearchParams, Link } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMemo, useState } from "react";
 import {
-  ArrowLeft, Check, AlertCircle, Play, Trash2, Code2,
+  Check, AlertCircle, Play, Trash2, Code2,
   Stethoscope, CheckCircle2, XCircle, AlertTriangle, MinusCircle, Loader2,
-  Sparkles, Activity, ChevronDown, ChevronRight, FileDown,
-  ScrollText, Hammer, Bot,
+  Sparkles, Activity, ChevronDown, ChevronRight, FileDown, CloudOff,
+  ScrollText, Hammer, Network, Bell, LayoutDashboard, ClipboardList, Eye, Wand2,
+  Rocket,
 } from "lucide-react";
 
 import {
   listPlans, getPlan, getPlanAudit, approvePlan,
   startRun, deletePlan, replacePlanJson, getPlanHealth, listPipelines,
+  clearPlanCloud,
   type RunKind, type HealthReport,
 } from "@/lib/api";
 import { usePipeline } from "@/lib/PipelineContext";
@@ -22,12 +24,18 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { JsonEditor } from "@/components/JsonEditor";
 import { Pagination } from "@/components/Pagination";
 import { PlanKpiCard } from "@/components/PlanKpiCard";
+import { PageHeader } from "@/components/PageHeader";
+import { StatKpi } from "@/components/StatKpi";
+import { AssistantSectionButton, AssistantCtaCard } from "@/components/AssistantCta";
+import {
+  ClarionBadge, ClarionGlyph, type ClarionGlyphName,
+} from "@/components/icons/ClarionIcons";
 import { DemoSessionCard } from "@/components/DemoSessionCard";
 import { DemoHistorySection } from "@/pages/Audit";
 import { AuditTrailCard } from "@/components/plan/AuditTrailCard";
 import { DashboardsAlertsCard } from "@/components/plan/DashboardsAlertsCard";
 import { IncidentScriptTimeline } from "@/components/plan/IncidentScriptTimeline";
-import { PlanTabs, type PlanTabId } from "@/components/plan/PlanTabs";
+import { type PlanTabId } from "@/components/plan/PlanTabs";
 import { ProcessesTable } from "@/components/plan/ProcessesTable";
 import { SampleDataSourcesCard } from "@/components/plan/SampleDataSourcesCard";
 import { TelemetryShapeCard } from "@/components/plan/TelemetryShapeCard";
@@ -83,43 +91,50 @@ export function PlansListPage() {
     }
   }
 
+  // State rollup for the summary KPI row (counts, not arrays).
+  const byState = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const p of ordered) m[p.review_state] = (m[p.review_state] ?? 0) + 1;
+    return m;
+  }, [ordered]);
+
   return (
     <div className="space-y-6">
-      <header>
-        <div className="text-[11px] font-mono uppercase tracking-[0.08em] text-[var(--color-text-faint)]">
-          Plans
-        </div>
-        <h1 className="mt-2 text-[28px] font-semibold tracking-tight leading-tight text-[var(--color-text)]">
-          Every plan, ready to review.
-        </h1>
-        <p className="text-[var(--color-text-muted)] mt-1 text-sm max-w-2xl">
-          DemoPlans the planner produced. Click in to inspect, approve, refine, or
-          start a live demo.{" "}
-          <span className="text-[var(--color-text-faint)] tabular-nums">
-            {ordered.length} total
+      <PageHeader
+        eyebrow="Plans"
+        title="Every plan, ready to review."
+        lede="DemoPlans the planner produced. Open one to inspect the graph, approve, refine with the assistant, or start a live demo."
+      />
+
+      {profileFilter && (
+        <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-md bg-[var(--color-accent-bg)] border border-[color:var(--color-accent-border)] text-xs">
+          <span className="text-[var(--color-text-muted)]">filter</span>
+          <span className="font-mono text-[var(--color-accent)]">
+            profile = {profileFilter}
           </span>
-        </p>
-        {profileFilter && (
-          <div className="mt-3 inline-flex items-center gap-2 px-2.5 py-1 rounded-md bg-[var(--color-accent-bg)] border border-[color:var(--color-accent-border)] text-xs">
-            <span className="text-[var(--color-text-muted)]">filter</span>
-            <span className="font-mono text-[var(--color-accent)]">
-              profile = {profileFilter}
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                const next = new URLSearchParams(searchParams);
-                next.delete("profile");
-                setSearchParams(next, { replace: true });
-              }}
-              aria-label="Clear profile filter"
-              className="text-[var(--color-text-faint)] hover:text-[var(--color-text)]"
-            >
-              ×
-            </button>
-          </div>
-        )}
-      </header>
+          <button
+            type="button"
+            onClick={() => {
+              const next = new URLSearchParams(searchParams);
+              next.delete("profile");
+              setSearchParams(next, { replace: true });
+            }}
+            aria-label="Clear profile filter"
+            className="text-[var(--color-text-faint)] hover:text-[var(--color-text)]"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      {!plans.isLoading && ordered.length > 0 && (
+        <div className="grid gap-3 grid-cols-2 lg:grid-cols-4">
+          <StatKpi label="Plans" value={ordered.length} hint="all states" icon={ClipboardList} tone="accent" />
+          <StatKpi label="Approved" value={byState.approved_for_provision ?? 0} hint="ready to provision" icon={CheckCircle2} tone="accent" />
+          <StatKpi label="Provisioned" value={byState.provisioned ?? 0} hint="live in Cloud" icon={Activity} tone="grafana" />
+          <StatKpi label="In review" value={byState.se_reviewed ?? 0} hint="awaiting approval" icon={Eye} tone="info" />
+        </div>
+      )}
 
       {plans.isLoading ? (
         <Card>
@@ -255,6 +270,12 @@ interface KGNode {
   technical_subtype?: string | null;
   agentic_subtype?: string | null;
   label: string;
+  live_state_binding?: unknown;
+}
+
+interface KGEdge {
+  from_node_id?: string;
+  to_node_id?: string;
 }
 
 interface PlanDoc {
@@ -263,7 +284,7 @@ interface PlanDoc {
   review_state: string;
   narrative: string;
   business_process_models: Array<{ process_id: string; name: string; business_steps: unknown[]; failure_modes: unknown[] }>;
-  knowledge_graph: { nodes: KGNode[]; edges: unknown[] };
+  knowledge_graph: { nodes: KGNode[]; edges: KGEdge[] };
   incident_script: { title: string; total_duration_minutes: number; arming_mode: string; events: Array<{ event_type: string; target_id: string; offset_seconds: number }> };
   dashboard_specs: Array<{ dashboard_id: string; title: string; audience: string }>;
   alert_specs: Array<{ alert_id: string; severity: string; business_subject_line: string }>;
@@ -285,10 +306,6 @@ export function PlanDetailPage() {
 
   return (
     <div className="space-y-6">
-      <Link to="/plans" className="text-sm text-[var(--color-text-muted)] hover:text-[var(--color-text)] inline-flex items-center gap-1">
-        <ArrowLeft size={14} /> Plans
-      </Link>
-
       {plan.isLoading ? (
         <div className="text-[var(--color-text-faint)]">Loading…</div>
       ) : !plan.data ? (
@@ -340,83 +357,166 @@ function PlanDetailBody({
     <div className="space-y-6">
       <PlanHeader plan={plan} />
 
-      {/* CDD plan-detail body: knowledge graph on the left (1.4fr),
-          live demo session + plan contents stats on the right (1fr).
-          Collapses to single column below xl. `items-start` keeps
-          each column at its natural height. */}
-      <div className="grid gap-5 xl:grid-cols-[1.4fr_1fr] items-start">
-        <KnowledgeGraphPanel plan={plan} />
-        <div className="space-y-5">
-          {isApproved && (
+      {/* Gradient KPI row — the plan's headline metrics, directly under
+          the header (the design-rework "stat tiles, not a buried stats
+          card"). Render counts, not arrays. */}
+      <PlanKpiRow plan={plan} />
+
+      {/* Two-column body (~1.55fr / 1fr, collapses under xl). LEFT is the
+          subject matter: knowledge-graph hero + the plan-contents tabs.
+          RIGHT is the primary action (live demo) + the in-context
+          assistant — matching the shared detail-page skeleton. */}
+      <div className="grid gap-5 xl:grid-cols-[1.55fr_1fr] items-start">
+        <div className="space-y-5 min-w-0">
+          <KnowledgeGraphPanel plan={plan} />
+
+          {/* Plan-contents tabs. The tab strip is a plain underline row
+              (no card) so the panels — each its own card — don't nest a
+              box-in-a-box. */}
+          <div className="space-y-4">
+            <div className="flex gap-1 border-b border-[var(--color-border)] overflow-x-auto">
+              {([
+                { id: "processes",  label: "Processes",  count: processes.length },
+                { id: "dashboards", label: "Dashboards", count: dashboards.length },
+                { id: "telemetry",  label: "Telemetry",  count: undefined },
+                { id: "incident",   label: "Incident",   count: incidentStops.length },
+                { id: "audit",      label: "Audit & data", count: undefined },
+              ] as { id: PlanTabId; label: string; count?: number }[]).map((t) => {
+                const active = t.id === activeTab;
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    onClick={() => setActiveTab(t.id)}
+                    className={cn(
+                      "h-9 px-3 text-[12.5px] font-medium inline-flex items-center gap-2 whitespace-nowrap border-b-2 transition-colors",
+                      active
+                        ? "text-[var(--color-text)] border-[var(--color-accent)]"
+                        : "text-[var(--color-text-muted)] border-transparent hover:text-[var(--color-text)]",
+                    )}
+                  >
+                    {t.label}
+                    {typeof t.count === "number" && (
+                      <span
+                        className={cn(
+                          "font-mono text-[10px] tabular-nums px-1 rounded",
+                          active
+                            ? "text-[var(--color-accent)] bg-[var(--color-accent-bg)]"
+                            : "text-[var(--color-text-faint)] bg-[var(--color-canvas-elev2)]/60",
+                        )}
+                      >
+                        {t.count}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+              <AssistantSectionButton
+                scope={{ plan_id: plan.plan_id }}
+                seed="Refine this plan's processes, dashboards and alerts."
+                title="Refine plan contents with the assistant"
+                className="ml-auto self-center shrink-0"
+              />
+            </div>
+            <div role="tabpanel" aria-label={activeTab}>
+              {activeTab === "processes" && (
+                <ProcessesTable rows={processes} />
+              )}
+              {activeTab === "dashboards" && (
+                <DashboardsAlertsCard items={dashboards} showAllInitially />
+              )}
+              {activeTab === "telemetry" && (
+                <TelemetryShapeCard shape={telemetry} />
+              )}
+              {activeTab === "incident" && (
+                <IncidentScriptTimeline
+                  stops={incidentStops}
+                  totalMinutes={plan.incident_script?.total_duration_minutes ?? 0}
+                />
+              )}
+              {activeTab === "audit" && (
+                <div className="grid grid-cols-1 gap-5 items-start">
+                  <AuditTrailCard entries={audit} />
+                  <SampleDataSourcesCard sources={sampleSources} />
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-5 min-w-0">
+          {isApproved ? (
             <div id="plan-demo-session">
               <DemoSessionCard planId={plan.plan_id} />
             </div>
+          ) : (
+            <PlanGoLiveCard
+              planId={plan.plan_id}
+              stateLabel={REVIEW_STATE_LABEL[plan.review_state] ?? plan.review_state}
+            />
           )}
-          <PlanContentsStats plan={plan} />
-        </div>
-      </div>
-
-      {/* Controlled tab strip + a single panel at a time. Replaces an
-          earlier anchor-scroll prototype that turned the page into a
-          long ribbon; now each section's content is swapped in place
-          so the page stays compact and the SE can sweep through the
-          plan without scroll fatigue. */}
-      <PlanTabs
-        tabs={[
-          { id: "processes",  label: "Processes & SLOs",  count: processes.length },
-          { id: "dashboards", label: "Dashboards & alerts", count: dashboards.length },
-          { id: "telemetry",  label: "Telemetry shape" },
-          { id: "incident",   label: "Incident script", count: incidentStops.length },
-          { id: "audit",      label: "Audit & data" },
-        ]}
-        activeId={activeTab}
-        onChange={(id) => setActiveTab(id as PlanTabId)}
-      />
-
-      <div role="tabpanel" aria-label={activeTab}>
-        {activeTab === "processes" && (
-          <ProcessesTable rows={processes} />
-        )}
-        {activeTab === "dashboards" && (
-          <DashboardsAlertsCard items={dashboards} showAllInitially />
-        )}
-        {activeTab === "telemetry" && (
-          <TelemetryShapeCard shape={telemetry} />
-        )}
-        {activeTab === "incident" && (
-          <IncidentScriptTimeline
-            stops={incidentStops}
-            totalMinutes={plan.incident_script?.total_duration_minutes ?? 0}
+          <AssistantCtaCard
+            scope={{ plan_id: plan.plan_id }}
+            title="Refine with the assistant"
+            body="Steer this plan in plain language — add a panel, raise an alert threshold, re-weight the graph. The assistant edits the plan, then can re-provision to push the change to Cloud."
+            cta="Open assistant"
           />
-        )}
-        {activeTab === "audit" && (
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-5 items-start">
-            <AuditTrailCard entries={audit} />
-            <SampleDataSourcesCard sources={sampleSources} />
-          </div>
-        )}
-      </div>
-
-      {/* Operations — surfaced, no longer buried in a disclosure. The
-          deterministic "act on this plan" controls: approve, build,
-          granular phase runs (PlanActions) beside health diagnostics +
-          demo-session history. The conversational path lives in the
-          Clarion assistant (the "Refine with assistant" button in the
-          header, or ⌘J); these buttons are the explicit equivalents. */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-5 items-start">
-        <PlanActions planId={plan.plan_id} state={plan.review_state} />
-        <div className="space-y-5">
-          <HealthPanel planId={plan.plan_id} />
-          <DemoHistorySection planId={plan.plan_id} />
         </div>
       </div>
 
-      {/* Composition — raw plan tree + schema-validated JSON editor.
-          Genuinely power-user (direct structural edits). The chat tab
-          that used to live here is gone: narrative refinement now
-          happens in the assistant, so this is a single-purpose
-          disclosure for hand-editing the plan_json. */}
-      <CompositionPanel plan={plan} />
+      {/* Operations — the deterministic "act on this plan" controls
+          (approve / build / phase runs), KG health, demo history, and the
+          raw plan tree + JSON editor. Collapsed by default so the page
+          stays focused on the graph + contents; one click for the SE who
+          wants to drive the plan deterministically (the conversational
+          path is the assistant panel above, or ⌘J). */}
+      <details className="group">
+        <summary
+          className={cn(
+            "list-none cursor-pointer select-none",
+            "flex items-center gap-2 px-4 py-3 rounded-md border",
+            "bg-[var(--color-canvas-elev1)] border-[var(--color-border)]",
+            "hover:border-[var(--color-border-strong)] transition-colors",
+            "text-sm font-medium text-[var(--color-text)]",
+          )}
+        >
+          <ChevronRight
+            size={14}
+            className="text-[var(--color-text-faint)] transition-transform group-open:rotate-90"
+          />
+          <span className="flex-1 inline-flex items-center gap-2">
+            <Sparkles size={13} className="text-[var(--color-text-faint)]" />
+            Operations — approve, build, health, history &amp; JSON
+          </span>
+          <span className="text-[11px] font-mono text-[var(--color-text-faint)]">advanced</span>
+        </summary>
+        <div className="mt-4 space-y-5">
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-5 items-start">
+            <PlanActions planId={plan.plan_id} state={plan.review_state} />
+            <div className="space-y-5">
+              <HealthPanel planId={plan.plan_id} />
+              <DemoHistorySection planId={plan.plan_id} />
+            </div>
+          </div>
+          <CompositionPanel plan={plan} />
+        </div>
+      </details>
+    </div>
+  );
+}
+
+/** Gradient KPI row for Plan detail — Processes / KG nodes / Alerts /
+ *  Dashboards / Assistant tools. Counts straight off the plan_json. */
+function PlanKpiRow({ plan }: { plan: PlanDoc }) {
+  return (
+    <div className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
+      <StatKpi label="Processes" value={plan.business_process_models.length} icon={ClipboardList} tone="accent" />
+      <StatKpi label="KG nodes" value={plan.knowledge_graph.nodes.length} icon={Network} tone="signal" hint={`${plan.knowledge_graph.edges.length} edges`} />
+      <StatKpi label="Alerts" value={plan.alert_specs.length} icon={Bell} tone="warning" />
+      <StatKpi label="Dashboards" value={plan.dashboard_specs.length} icon={LayoutDashboard} tone="info" />
+      <StatKpi label="Assistant tools" value={plan.assistant_tools.length} icon={Sparkles} tone="accent" />
     </div>
   );
 }
@@ -557,217 +657,177 @@ function PlanHeader({ plan }: { plan: PlanDoc }) {
   }
 
   return (
-    <div className="flex items-start gap-6 flex-wrap">
-      <div className="flex-1 min-w-[280px]">
-        <div className="text-[11px] font-mono uppercase tracking-[0.08em] text-[var(--color-text-faint)]">
-          Plan, {REVIEW_STATE_LABEL[plan.review_state] ?? plan.review_state}
-          <span className="ml-2 text-[var(--color-text-faint)]">
-            {plan.plan_id.slice(0, 8)}
-          </span>
-        </div>
-        <h1 className="mt-1 text-[32px] font-medium tracking-tight leading-tight text-[var(--color-text)]">
-          {t.lead} <span className="h1-display">{t.display}</span>.
-        </h1>
-        <p className="mt-3 text-[var(--color-text-muted)] text-[15px] leading-relaxed max-w-2xl">
-          {plan.narrative}
-        </p>
-        <div className="mt-4 flex items-center gap-2 flex-wrap">
-          <CrumbChip
-            to={`/profiles/${plan.source_profile_id}`}
-            label="source profile"
-            value={plan.source_profile_id}
-            icon={ScrollText}
-            title="Open the profile this plan was generated from"
-          />
-          <BuiltByChip planId={plan.plan_id} />
-        </div>
-      </div>
+    <div className="space-y-3">
+      <PageHeader
+        back={{ to: "/plans", label: "Plans" }}
+        eyebrow={
+          <>
+            Plan · {REVIEW_STATE_LABEL[plan.review_state] ?? plan.review_state}
+            <span className="ml-2 normal-case text-[var(--color-text-faint)]">
+              {plan.plan_id.slice(0, 8)}
+            </span>
+          </>
+        }
+        title={t.lead}
+        em={`${t.display}.`}
+        lede={plan.narrative}
+        actions={
+          <>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={exportPlan}
+              title="Download the plan_json as a file."
+            >
+              <FileDown size={12} /> Export plan
+            </Button>
+            {/* First-class entry into the Clarion assistant, scoped to this
+                plan — the conversational counterpart to the Actions card. */}
+            <Button
+              variant={isApproved ? "secondary" : "primary"}
+              size="sm"
+              onClick={() => assistant.openAssistant({ scope: { plan_id: plan.plan_id } })}
+              title="Open the Clarion assistant scoped to this plan (⌘J)."
+            >
+              <Wand2 size={12} /> Refine with assistant
+            </Button>
+            {isApproved && (
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={scrollToDemo}
+                title="Jump to the live demo session controls below."
+              >
+                <Play size={12} /> Start demo
+              </Button>
+            )}
+          </>
+        }
+      />
       <div className="flex items-center gap-2 flex-wrap">
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={exportPlan}
-          title="Download the plan_json as a file."
-        >
-          <FileDown size={12} /> Export plan
-        </Button>
-        {/* First-class entry into the Clarion assistant, scoped to this
-            plan. The assistant can refine the plan, re-run pipeline
-            phases, approve, and drive the demo — the conversational
-            counterpart to the deterministic Actions card below. */}
-        <Button
-          variant={isApproved ? "secondary" : "primary"}
-          size="sm"
-          onClick={() => assistant.openAssistant({ scope: { plan_id: plan.plan_id } })}
-          title="Open the Clarion assistant scoped to this plan (⌘J)."
-        >
-          <Bot size={12} /> Refine with assistant
-        </Button>
-        {isApproved && (
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={scrollToDemo}
-            title="Jump to the live demo session controls below."
-          >
-            <Play size={12} /> Start demo
-          </Button>
-        )}
+        <CrumbChip
+          to={`/profiles/${plan.source_profile_id}`}
+          label="source profile"
+          value={plan.source_profile_id}
+          icon={ScrollText}
+          title="Open the profile this plan was generated from"
+        />
+        <BuiltByChip planId={plan.plan_id} />
       </div>
     </div>
   );
 }
 
-/** Knowledge-graph card. CDD header (title + node/edge count) plus the
- *  existing tier-breakdown body. The fancy SVG node-link diagram from
- *  the design canvas is intentionally left out for now; the per-tier
- *  entity-type list still tells the SE what the plan models. */
+/** Tier metadata for the "entities created in Grafana Cloud" view. */
+const TIER_META: Record<
+  string,
+  { label: string; glyph: ClarionGlyphName; color: string }
+> = {
+  business_entity:    { label: "Business entities",    glyph: "tier-business",     color: "var(--color-accent)" },
+  agentic_resource:   { label: "Agentic resources",    glyph: "tier-cloud-region", color: "var(--color-info)" },
+  technical_resource: { label: "Technical resources",  glyph: "tier-technical",    color: "var(--color-signal)" },
+};
+const TIER_RENDER_ORDER = ["business_entity", "agentic_resource", "technical_resource"];
+
+/** Knowledge-graph card. We don't redraw the node-link diagram here — that
+ *  IS what Grafana Cloud builds (the asserts entity graph). Instead this
+ *  card answers "what gets created in GC": the entity areas the plan
+ *  models, grouped by tier + subtype with counts and example names. The
+ *  SE reviews; if something's off, they steer it with the assistant. */
 function KnowledgeGraphPanel({ plan }: { plan: PlanDoc }) {
   const nodes = plan.knowledge_graph.nodes ?? [];
-  const edges = plan.knowledge_graph.edges ?? [];
   return (
     <Card className="p-5">
-      <div className="flex items-center justify-between gap-3 mb-4">
-        <h3 className="text-sm font-medium text-[var(--color-text)] m-0">
-          Knowledge graph
-        </h3>
-        <span className="font-mono text-[11px] text-[var(--color-text-faint)] tabular-nums">
-          {nodes.length} nodes · {edges.length} edges
-        </span>
-      </div>
-      <EntityTypesBody plan={plan} />
-      {/* Legend mirrors the CDD plan-detail swatch row: business teal,
-          agentic blue, technical sky. */}
-      <div className="flex flex-wrap gap-3 mt-4 text-[11px] text-[var(--color-text-muted)]">
-        <span className="inline-flex items-center gap-1.5">
-          <i className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: "var(--color-accent)" }} />
-          Business
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <i className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: "var(--color-info)" }} />
-          Agentic
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <i className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: "var(--color-signal)" }} />
-          Technical
-        </span>
-      </div>
-    </Card>
-  );
-}
-
-/** Snapshot of what's IN the plan: the four counts SE eyes look for
- *  before clicking Start demo. Mirrors the CDD plan-detail "Plan
- *  contents" card (Processes / Dashboards / Alerts / Incident script
- *  duration). All numbers come from the plan_json directly. */
-function PlanContentsStats({ plan }: { plan: PlanDoc }) {
-  const stats: { label: string; value: string; sub?: string }[] = [
-    {
-      label: "Processes",
-      value: plan.business_process_models.length.toLocaleString(),
-    },
-    {
-      label: "Dashboards",
-      value: plan.dashboard_specs.length.toLocaleString(),
-    },
-    {
-      label: "Alerts",
-      value: plan.alert_specs.length.toLocaleString(),
-    },
-    {
-      label: "Incident script",
-      value: plan.incident_script?.total_duration_minutes
-        ? plan.incident_script.total_duration_minutes.toLocaleString()
-        : "—",
-      sub: plan.incident_script?.total_duration_minutes ? "min" : undefined,
-    },
-  ];
-  return (
-    <Card className="p-5">
-      <h3 className="text-sm font-medium text-[var(--color-text)] m-0 mb-3">Plan contents</h3>
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {stats.map((s) => (
-          <div key={s.label}>
-            <div className="text-[10px] font-mono uppercase tracking-[0.06em] text-[var(--color-text-faint)]">
-              {s.label}
-            </div>
-            <div className="mt-1 text-[22px] font-medium tabular-nums text-[var(--color-text)]">
-              {s.value}
-              {s.sub && <span className="text-[14px] text-[var(--color-text-faint)] ml-1">{s.sub}</span>}
-            </div>
+      <div className="flex items-start gap-3 mb-1">
+        <ClarionBadge name="kg-publish" tone="var(--color-info)" size={34} icon={19} radius={9} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2.5">
+            <h3 className="text-sm font-medium text-[var(--color-text)] m-0">
+              Knowledge graph
+            </h3>
+            <span className="font-mono text-[11px] text-[var(--color-text-faint)] tabular-nums">
+              {nodes.length} entities
+            </span>
           </div>
-        ))}
+          <p className="text-[12.5px] text-[var(--color-text-muted)] mt-1 leading-relaxed">
+            The entities this plan models — created in your Grafana Cloud tenant on
+            provision, then lit up live (
+            <span className="text-[var(--color-grafana)]">orange</span>) while the demo
+            emitter runs.
+          </p>
+        </div>
+        <AssistantSectionButton
+          scope={{ plan_id: plan.plan_id }}
+          seed="Refine the knowledge-graph entities for this plan — add, remove, or re-type entities to fit the company."
+          title="Refine the entities with the assistant"
+          className="shrink-0"
+        />
+      </div>
+      <div className="mt-4">
+        <EntityAreas nodes={nodes} />
       </div>
     </Card>
   );
 }
 
-/** At-a-glance breakdown of every entity type the plan models, grouped
- *  by tier (business / technical / agentic). Most useful right after a
- *  plan lands so the SE can verify the planner picked vertical-fit
- *  subtypes (no "store" on BlueSky Airlines etc.) without diving into
- *  the raw JSON. */
-/** Tier-grouped entity-type chip body. Extracted from the old
- *  EntityTypesPanel so KnowledgeGraphPanel can compose it inside its
- *  own card header without nesting Card-in-Card.
- *
- *  Returns null if the plan has no nodes (planner ran but produced
- *  zero entities, rare but possible for early failures). */
-function EntityTypesBody({ plan }: { plan: PlanDoc }) {
-  const nodes = plan.knowledge_graph.nodes ?? [];
+/** The entity areas a plan will materialise in Grafana Cloud, grouped by
+ *  tier → subtype with a count + a few example names. Lets the SE verify
+ *  vertical fit (no "store" on an airline) without opening the raw JSON. */
+function EntityAreas({ nodes }: { nodes: KGNode[] }) {
   if (nodes.length === 0) {
     return (
-      <div className="text-xs text-[var(--color-text-faint)] italic">
+      <div className="text-xs text-[var(--color-text-faint)] italic py-6 text-center">
         No entities in this plan yet.
       </div>
     );
   }
 
-  // Group node labels by (tier, subtype). Tier comes from node_type.
-  // Examples: subtype=region, store, channel, business_unit, ... (business)
-  //           service, cluster, namespace, database, queue, ... (technical)
-  const groups: Record<string, Record<string, string[]>> = {
-    "Business entities": {},
-    "Technical resources": {},
-    "Agentic resources": {},
-  };
-  const TIER_LABEL: Record<string, string> = {
-    business_entity: "Business entities",
-    technical_resource: "Technical resources",
-    agentic_resource: "Agentic resources",
-  };
+  const groups: Record<string, Record<string, string[]>> = {};
   for (const n of nodes) {
-    const tier = TIER_LABEL[n.node_type] ?? "Other";
-    const subtype = n.business_subtype ?? n.technical_subtype ?? n.agentic_subtype ?? "(untyped)";
-    if (!groups[tier]) groups[tier] = {};
-    if (!groups[tier][subtype]) groups[tier][subtype] = [];
-    groups[tier][subtype].push(n.label);
+    const tier = n.node_type;
+    const subtype =
+      n.business_subtype ?? n.technical_subtype ?? n.agentic_subtype ?? "untyped";
+    (groups[tier] ??= {});
+    (groups[tier][subtype] ??= []).push(n.label);
   }
 
-  const tiers = (Object.keys(groups) as string[]).filter(t => Object.keys(groups[t]).length > 0);
+  const tiers = TIER_RENDER_ORDER.filter((t) => groups[t]);
 
   return (
-    <div className="space-y-4">
-      {tiers.map(tier => {
-        const subtypes = groups[tier];
+    <div className="space-y-5">
+      {tiers.map((tierKey) => {
+        const meta = TIER_META[tierKey] ?? {
+          label: tierKey, glyph: "tier-technical" as ClarionGlyphName, color: "var(--color-text-muted)",
+        };
+        const subtypes = groups[tierKey];
         const subtypeKeys = Object.keys(subtypes).sort();
+        const total = Object.values(subtypes).reduce((a, l) => a + l.length, 0);
         return (
-          <div key={tier}>
-            <div className="text-[10px] font-mono text-[var(--color-text-faint)] uppercase tracking-wider mb-2">
-              {tier}
+          <div key={tierKey}>
+            <div className="flex items-center gap-2 mb-2.5">
+              <ClarionGlyph name={meta.glyph} size={14} style={{ color: meta.color }} />
+              <span className="text-[12px] font-medium text-[var(--color-text)]">{meta.label}</span>
+              <span className="font-mono text-[10px] text-[var(--color-text-faint)] tabular-nums">{total}</span>
             </div>
-            <div className="flex flex-wrap gap-1.5">
-              {subtypeKeys.map(st => {
+            <div className="space-y-1.5">
+              {subtypeKeys.map((st) => {
                 const labels = subtypes[st];
+                const examples = labels.slice(0, 5).join(" · ");
+                const extra = labels.length > 5 ? ` · +${labels.length - 5}` : "";
                 return (
                   <div
                     key={st}
-                    className="group relative inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-[var(--color-border)] bg-white/[0.02] hover:bg-white/[0.05] hover:border-[var(--color-border-strong)] transition-colors text-xs"
-                    title={labels.slice(0, 12).join(", ") + (labels.length > 12 ? ` … +${labels.length - 12} more` : "")}
+                    className="flex items-baseline gap-2.5 rounded-md border border-[var(--color-border)] bg-[var(--color-canvas-elev2)]/40 px-2.5 py-1.5"
+                    title={labels.join(", ")}
                   >
-                    <span className="font-medium">{st}</span>
-                    <span className="text-[var(--color-text-faint)] font-mono tabular-nums">
+                    <span className="text-[12.5px] font-medium shrink-0" style={{ color: meta.color }}>
+                      {st}
+                    </span>
+                    <span className="font-mono text-[10px] text-[var(--color-text-faint)] tabular-nums shrink-0">
                       {labels.length}
+                    </span>
+                    <span className="text-[11.5px] text-[var(--color-text-muted)] truncate">
+                      {examples}{extra}
                     </span>
                   </div>
                 );
@@ -822,6 +882,93 @@ function Stat({ label, value }: { label: string; value: number }) {
 
 // ─── Actions: approve + run ─────────────────────────────────────────
 
+/**
+ * The primary "act on this plan" card shown when a plan isn't live yet.
+ * Standard approve flow: one deterministic button approves the plan AND
+ * kicks off the rest of the build (generate → provision → kg-publish) — no
+ * LLM/assistant call. The "approve" pipeline phase records the approval
+ * in-process and auto-approves a draft, so a single click takes the SE from
+ * a reviewable plan to a live demo. If they don't want to approve yet,
+ * "Refine with assistant" is the alternative.
+ */
+function PlanGoLiveCard({ planId, stateLabel }: { planId: string; stateLabel: string }) {
+  const navigate = useNavigate();
+  const pipeline = usePipeline();
+  const assistant = useAssistant();
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Inherit url/company from this plan's most recent build (metadata only;
+  // the build skips research/plan so a placeholder URL is harmless).
+  const pipelinesQ = useQuery({
+    queryKey: ["pipelines"],
+    queryFn: listPipelines,
+    refetchInterval: 15_000,
+  });
+  const latest = (pipelinesQ.data ?? []).find((p) => p.plan_id === planId);
+
+  async function approveAndGoLive() {
+    if (busy) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      if (latest?.pipeline_id && typeof pipeline.continueInPlace === "function") {
+        // Continue the plan's existing build IN PLACE — approve + provision
+        // on the same build, no new build row.
+        await pipeline.continueInPlace(latest.pipeline_id, { startingPhase: "approve" });
+      } else if (typeof pipeline.startFromPhase === "function") {
+        // No prior build for this plan (rare) — start one from approve.
+        await pipeline.startFromPhase({
+          phase: "approve",
+          url: latest?.url ?? `plan://${planId.slice(0, 8)}`,
+          company: latest?.company ?? undefined,
+          plan_id: planId,
+        });
+      } else {
+        setErr("Pipeline context isn't ready (likely a stale tab). Hard-refresh and try again.");
+        setBusy(false);
+        return;
+      }
+      navigate("/new");
+    } catch (e) {
+      setErr(`Couldn't approve and provision: ${e instanceof Error ? e.message : String(e)}`);
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card className="p-5 space-y-3 border-[color:var(--color-accent-border)] bg-[var(--color-accent-bg)]/40">
+      <div className="flex items-center gap-2">
+        <span className="grid place-items-center w-8 h-8 rounded-lg bg-[var(--color-accent-bg)] text-[var(--color-accent)] border border-[var(--color-accent-border)]">
+          <Rocket size={15} />
+        </span>
+        <h3 className="text-sm font-medium text-[var(--color-text)] m-0">Ready to go live</h3>
+      </div>
+      <p className="text-[13px] leading-relaxed text-[var(--color-text-muted)] m-0">
+        This plan is {stateLabel} — <strong className="text-[var(--color-text)]">nothing is in Grafana Cloud yet</strong>.
+        Approving provisions the dashboards, alerts and entities and starts the live demo. Or refine the plan with the
+        assistant first.
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button variant="primary" size="sm" disabled={busy} onClick={() => void approveAndGoLive()}>
+          {busy
+            ? <><Loader2 size={13} className="animate-spin" /> Provisioning…</>
+            : <><CheckCircle2 size={13} /> Approve &amp; go live</>}
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={busy}
+          onClick={() => assistant.openAssistant({ scope: { plan_id: planId }, seedPrompt: "Refine this plan before I approve it: " })}
+        >
+          <Wand2 size={13} /> Refine with assistant
+        </Button>
+      </div>
+      {err && <p className="text-xs text-[var(--color-danger)] m-0">{err}</p>}
+    </Card>
+  );
+}
+
 function PlanActions({ planId, state }: { planId: string; state: string }) {
   const qc = useQueryClient();
   const navigate = useNavigate();
@@ -869,6 +1016,20 @@ function PlanActions({ planId, state }: { planId: string; state: string }) {
       qc.invalidateQueries({ queryKey: ["plans"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
       navigate("/plans");
+    },
+    onError: (e: Error) => setError(e.message),
+  });
+
+  // Clear the plan's Grafana Cloud resources (folder + dashboards + alerts)
+  // but KEEP the Clarion plan. The "tidy my tenant without losing the work"
+  // action; the plan reverts to not-provisioned so it can be re-provisioned.
+  const clearCloudMut = useMutation({
+    mutationFn: () => clearPlanCloud(planId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["plan", planId] });
+      qc.invalidateQueries({ queryKey: ["plans"] });
+      qc.invalidateQueries({ queryKey: ["orphans"] });
+      setError(null);
     },
     onError: (e: Error) => setError(e.message),
   });
@@ -1024,10 +1185,39 @@ function PlanActions({ planId, state }: { planId: string; state: string }) {
         </div>
       )}
 
-      <div className="pt-3 border-t border-[var(--color-border)]">
-        <Button variant="danger" size="sm" onClick={() => setConfirmDelete(true)}>
-          <Trash2 size={12} /> Delete plan
-        </Button>
+      {/* Cleanup — pick exactly what to remove. "Remove from Cloud" tidies
+          the Grafana tenant (folder + dashboards + alerts) but keeps the
+          Clarion plan so you can re-provision later; "Delete plan" removes
+          it from Clarion entirely (and, in the dialog, optionally Cloud). */}
+      <div className="pt-3 border-t border-[var(--color-border)] space-y-2">
+        <div className="text-[10px] font-mono uppercase tracking-wider text-[var(--color-text-faint)]">
+          Cleanup
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={clearCloudMut.isPending}
+            title="Remove this plan's dashboards folder + alert rules from Grafana Cloud, but keep the plan in Clarion."
+            onClick={() => {
+              if (window.confirm(
+                "Remove this plan's Grafana Cloud resources (folder, dashboards, alerts)?\n\n" +
+                "The Clarion plan is kept — it reverts to not-provisioned so you can re-provision later.",
+              )) clearCloudMut.mutate();
+            }}
+          >
+            {clearCloudMut.isPending ? <Loader2 size={12} className="animate-spin" /> : <CloudOff size={12} />}
+            Remove from Cloud
+          </Button>
+          <Button variant="danger" size="sm" onClick={() => setConfirmDelete(true)}>
+            <Trash2 size={12} /> Delete plan
+          </Button>
+        </div>
+        {clearCloudMut.data?.cleared && (
+          <div className="text-xs text-[var(--color-live)] flex items-center gap-1">
+            <Check size={12} /> Cloud resources removed — plan kept{clearCloudMut.data.reverted_to ? ", reverted to approved" : ""}.
+          </div>
+        )}
       </div>
 
       <ConfirmDialog

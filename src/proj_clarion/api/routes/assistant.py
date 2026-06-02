@@ -148,7 +148,39 @@ What you can DO (you are an agent, not just a chat box — act, don't just advis
     "stop the build" / "cancel it", this is the tool (NOT stop_demo, which
     only stops live telemetry). If you don't have the pipeline_id, call
     list_pipelines and cancel the running one.
+  * delete_build(pipeline_id) — hard-delete a build record (cancels it first if running).
+    The fix for a wedged/runaway build. Leaves the plan/profile + Cloud intact.
+  * clear_plan_cloud(plan_id) — remove a plan's Grafana Cloud folder + alerts but KEEP
+    the Clarion plan. The "tidy my tenant without losing the plan" action.
+  * delete_plan(plan_id) / delete_profile(profile_id) — delete from Clarion (profile
+    cascades to its plans); both clear the corresponding Cloud resources by default.
+  * cleanup_orphan_folders() — sweep leftover clarion-* Cloud folders whose plan is gone.
   * Plus read-only inspection: list_/get_ profiles, plans, pipelines, demo sessions, audit.
+
+Starting a build from a URL OR a description (you are the hero of the build flow):
+  * The SE may give you a company URL, OR just describe the customer / pick a scenario
+    template — e.g. "a holiday-peak retailer with a 4× order spike", "fintech · fraud
+    spike · auth + payments", "B2B logistics with SLA breaches". Handle BOTH; never make
+    them go find a URL when a good demo can be built from the description.
+  * If the description points to a specific real company, infer its homepage URL and
+    run_build with it. State which company/URL you picked in ONE line so it's transparent
+    ("Building from homedepot.com — best fit for a holiday-peak big-box retailer.").
+  * If it's a generic archetype with no specific company implied, pick a well-known, real
+    representative company that fits the scenario and build from its URL. Only ask the SE
+    for a URL when the scenario is too ambiguous to pick a sensible representative, or when
+    they clearly want to name the company themselves.
+  * Turning a vague scenario into one concrete, buildable demo is exactly your job — act,
+    don't stall. (research then grounds the profile in that real company's fetched data, so
+    the vocabulary discipline below still governs the resulting profile/plan.)
+  * A build STOPS AT THE PLAN by default — nothing reaches Grafana Cloud until the SE
+    reviews + approves it. So after a build lands, point them at the plan to review/approve,
+    or offer to refine it (extend_profile / re-run plan) first. Only provision / go live
+    (run_pipeline_phase from 'provision'/'kg-publish', or run_build with stop_after_phase=
+    'kg-publish') once they've approved or explicitly asked to go live.
+  * No duplicate profiles. If a company already has a profile, DON'T run_build it again —
+    build from the existing profile (run_pipeline_phase phase='plan', profile_id=…). run_build
+    is hard-blocked on an existing host and will error; only set allow_duplicate=true if the SE
+    explicitly says they want a second, separate profile. Use list_profiles to check first.
 
 How to operate:
   * The SE's normal loop: a build runs, then they work WITH YOU to refine it. The
@@ -161,12 +193,17 @@ How to operate:
   * After a build/extend/demo action, tell the SE what you did and give them the
     watch_url (e.g. /pipelines/<id>) so they can follow it.
   * Chain tools when it makes sense (extend → re-plan) within a single turn.
-  * There is no delete tool — if the SE wants to delete a plan/profile, point them
-    to the Delete button on the relevant page.
-  * Builds may be gated: when the SE has approval mode on, run_build / run_pipeline_phase
-    PAUSE for an explicit Approve before they actually start. So phrase build kickoffs as
-    intent ("I'll start a full build for …") rather than claiming it already started. If a
-    build comes back declined, acknowledge it and ask what they'd like to change — don't retry.
+  * You CAN delete and clean up: delete_build, delete_plan, delete_profile, clear_plan_cloud,
+    cleanup_orphan_folders. For cleanup, prefer the least-destructive option that meets the
+    ask — to tidy Grafana Cloud while keeping the work, use clear_plan_cloud (or
+    cleanup_orphan_folders), NOT delete_plan. Reach for delete_plan/delete_profile only when
+    the SE wants the Clarion record gone too. Before deleting, say what will be removed (e.g.
+    "this also deletes N plans built from it") so they can confirm.
+  * Gated actions: when approval mode is on (the default), the build kickoffs AND the
+    destructive ones (delete_build/plan/profile, clear_plan_cloud, cleanup_orphan_folders)
+    PAUSE for an explicit Approve. So phrase them as intent ("I'll clear the Cloud resources
+    for plan …") rather than claiming it's done. If one comes back declined, acknowledge it
+    and ask what they'd like to change — don't retry.
 """
 
 
@@ -326,6 +363,37 @@ def archive_conversation(conversation_id: int) -> None:
 # ──────────────────────────────────────────────────────────────────
 
 
+def _scope_hint(scope: dict[str, Any] | None) -> str | None:
+    """Render a one-line page-context preamble from a turn's context_scope.
+
+    The system prompt promises the agent that each turn "includes a
+    context_scope hint", but the persisted scope was never surfaced into
+    the message it actually sees — so it kept asking "which company?".
+    This injects a terse, bracketed hint ahead of the user's text so
+    "this plan / this profile / they / them" resolve without the SE
+    repeating an id. Only emits for a concrete entity; a bare route is
+    not specific enough to anchor "this", so it's skipped.
+    """
+    if not scope:
+        return None
+    if scope.get("plan_id"):
+        pid = str(scope["plan_id"])
+        return (
+            f"[Page context: the SE is viewing plan {pid}. Treat \"this plan\" / "
+            f"\"it\" as plan {pid} unless they name another.]"
+        )
+    if scope.get("profile_id"):
+        pid = str(scope["profile_id"])
+        return (
+            f"[Page context: the SE is viewing profile {pid}. Treat \"this profile\" / "
+            f"\"they\" / \"them\" / \"their\" as profile {pid} unless they name another company.]"
+        )
+    if scope.get("pipeline_id"):
+        pid = str(scope["pipeline_id"])
+        return f"[Page context: the SE is viewing build {pid}. Treat \"this build\" as {pid}.]"
+    return None
+
+
 def _build_anthropic_messages(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Reconstruct the Anthropic messages array from persisted turns.
 
@@ -349,7 +417,11 @@ def _build_anthropic_messages(turns: list[dict[str, Any]]) -> list[dict[str, Any
         if role == "user":
             if not content:
                 continue
-            msgs.append({"role": "user", "content": content})
+            hint = _scope_hint(t.get("context_scope"))
+            msgs.append({
+                "role": "user",
+                "content": f"{hint}\n\n{content}" if hint else content,
+            })
         elif role == "assistant":
             blocks: list[dict[str, Any]] = []
             if content:
@@ -502,10 +574,20 @@ def _approval_message(call: dict[str, Any]) -> str:
     name = call.get("name")
     inp = call.get("input") or {}
     if name == "run_build":
-        return f"Start a full build for {inp.get('url') or 'this company'}?"
+        return f"Start a build for {inp.get('url') or 'this company'}?"
     if name == "run_pipeline_phase":
         phase = inp.get("phase") or "a"
         return f"Run the '{phase}' build phase?"
+    if name == "delete_build":
+        return f"Delete build {str(inp.get('pipeline_id') or '')[:8]}? (cancels it if running)"
+    if name == "clear_plan_cloud":
+        return f"Remove plan {str(inp.get('plan_id') or '')[:8]}'s Grafana Cloud resources (keep the plan)?"
+    if name == "delete_plan":
+        return f"Delete plan {str(inp.get('plan_id') or '')[:8]} from Clarion (and its Cloud resources)?"
+    if name == "delete_profile":
+        return f"Delete profile {inp.get('profile_id') or ''} and every plan built from it?"
+    if name == "cleanup_orphan_folders":
+        return "Remove orphan Clarion folders from Grafana Cloud?"
     return f"Run {name}?"
 
 
