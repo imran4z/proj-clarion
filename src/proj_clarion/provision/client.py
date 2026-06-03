@@ -33,6 +33,14 @@ class GrafanaClient:
                 "push the generated JSON manually."
             )
         self._gcx = gcx_binary
+        # SAFETY: resolve + verify the gcx context against the configured
+        # GRAFANA_CLOUD_STACK_URL up front, so every push below is pinned to
+        # the SE's own stack — never gcx's ambient current-context (which can
+        # point at a customer tenant). Raises GcxContextError (fail fast) if it
+        # can't be confirmed; the caller then pushes nothing.
+        from proj_clarion.provision.gcx import resolve_gcx_context
+
+        self._context = resolve_gcx_context()
 
     def close(self) -> None:
         # Subprocess; nothing to close.
@@ -75,7 +83,9 @@ class GrafanaClient:
         We detect that shape and route to the right exception (or return None
         for tolerated 404s).
         """
-        cmd = [self._gcx, "api", path, "-X", method, "--agent"]
+        # --context pins the target stack (resolved/verified in __init__) so we
+        # never inherit gcx's ambient current-context.
+        cmd = [self._gcx, "--context", self._context, "api", path, "-X", method, "--agent"]
         stdin: bytes | None = None
         if body is not None:
             cmd.extend(["-d", "@-"])

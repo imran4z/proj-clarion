@@ -537,7 +537,7 @@ def kg_preview(plan_id: str, out_dir: Path) -> None:
     )
 
 
-def _sweep_orphan_clarion_prom_rules(*, out_dir: Path, current_plan_id_prefix: str) -> None:
+def _sweep_orphan_clarion_prom_rules(*, out_dir: Path, current_plan_id_prefix: str, gcx_ctx: str) -> None:
     """List Cloud-side prom-rules; for each clarion-entity-recording-rules-*
     that ISN'T this plan's, overwrite with a tombstone (renamed record so
     the `clarion_entity_info` claim is freed). Without this, every plan
@@ -557,7 +557,7 @@ def _sweep_orphan_clarion_prom_rules(*, out_dir: Path, current_plan_id_prefix: s
     # ruleNames array. We grep for the line that starts with `{` and has
     # `"ruleNames":`. Brittle-ish but stable across gcx 0.2.x.
     list_result = subprocess.run(
-        ["gcx", "kg", "rules", "list", "-vvv", "--log-http-payload"],
+        ["gcx", "--context", gcx_ctx, "kg", "rules", "list", "-vvv", "--log-http-payload"],
         capture_output=True, text=True, check=False,
     )
     if list_result.returncode != 0:
@@ -610,7 +610,7 @@ def _sweep_orphan_clarion_prom_rules(*, out_dir: Path, current_plan_id_prefix: s
         tomb_path = tomb_dir / f"{name}.yaml"
         tomb_path.write_text(body)
         result = subprocess.run(
-            ["gcx", "kg", "rules", "create", "-f", str(tomb_path)],
+            ["gcx", "--context", gcx_ctx, "kg", "rules", "create", "-f", str(tomb_path)],
             capture_output=True, text=True, check=False,
         )
         if result.returncode != 0:
@@ -727,6 +727,18 @@ def kg_publish(plan_id: str, push_rules: bool, emit: bool,
     console.print(f"[green]Wrote[/green] {out_dir}/model-rules.yaml, prom-rules.yaml")
 
     if push_rules:
+        # SAFETY: pin gcx to the configured stack BEFORE any push. gcx's
+        # ambient current-context can point at a customer tenant; resolving +
+        # verifying here (and aborting on mismatch) keeps every KG push on the
+        # SE's own stack — never a customer's.
+        from proj_clarion.provision.gcx import GcxContextError, resolve_gcx_context
+        try:
+            gcx_ctx = resolve_gcx_context()
+        except GcxContextError as exc:
+            console.print(f"[red]Refusing to push KG rules:[/red] {exc}")
+            sys.exit(1)
+        console.print(f"[dim]gcx → context[/dim] [bold]{gcx_ctx}[/bold]")
+
         # Sweep orphan clarion-entity-recording-rules-* files BEFORE pushing
         # the new prom-rules. Asserts dedups recording-rule record names
         # globally across all rule files in the tenant. Each plan's
@@ -738,12 +750,13 @@ def kg_publish(plan_id: str, push_rules: bool, emit: bool,
         _sweep_orphan_clarion_prom_rules(
             out_dir=out_dir,
             current_plan_id_prefix=str(plan.plan_id)[:8],
+            gcx_ctx=gcx_ctx,
         )
 
         from proj_clarion.observability.tools import track_tool_call
         for fname, gcx_cmd, tool_name in (
-            ("model-rules.yaml", ["gcx", "kg", "model-rules", "create", "-f"], "kg_model_rules_push"),
-            ("prom-rules.yaml",  ["gcx", "kg", "rules",       "create", "-f"], "kg_prom_rules_push"),
+            ("model-rules.yaml", ["gcx", "--context", gcx_ctx, "kg", "model-rules", "create", "-f"], "kg_model_rules_push"),
+            ("prom-rules.yaml",  ["gcx", "--context", gcx_ctx, "kg", "rules",       "create", "-f"], "kg_prom_rules_push"),
         ):
             file_path = out_dir / fname
             console.print(f"[cyan]Pushing[/cyan] {fname} via gcx…")
@@ -895,11 +908,20 @@ def kg_verify(plan_id: str, entity_type: str | None) -> None:
         "Region", "Channel", "Store", "FulfillmentCenter",
         "ClarionPod", "VM",
     ]
+    # Pin the gcx context to the configured stack — don't query (or imply we
+    # verified) a customer's tenant by inheriting the ambient context.
+    from proj_clarion.provision.gcx import GcxContextError, resolve_gcx_context
+    try:
+        gcx_ctx = resolve_gcx_context()
+    except GcxContextError as exc:
+        console.print(f"[red]Won't query KG:[/red] {exc}")
+        sys.exit(1)
+
     t = Table(title="KG entities", show_header=True, header_style="bold")
     t.add_column("type"); t.add_column("count"); t.add_column("sample names")
     for et in types_to_check:
         result = subprocess.run(
-            ["gcx", "kg", "entities", "list", "--type", et, "-o", "json", "--agent"],
+            ["gcx", "--context", gcx_ctx, "kg", "entities", "list", "--type", et, "-o", "json", "--agent"],
             capture_output=True, check=False,
         )
         if result.returncode != 0:

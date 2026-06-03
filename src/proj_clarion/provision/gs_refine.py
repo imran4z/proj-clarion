@@ -59,7 +59,6 @@ def _build_prompt(plan: DemoPlan, customer: str, business_model: str) -> str:
     token costs Assistant credits and risks longer replies that won't
     parse cleanly. Vertical context is the key input; everything else
     GS can introspect from the stack."""
-    company = plan.knowledge_graph.nodes[0].label if plan.knowledge_graph.nodes else customer
     services = [n.node_id for n in plan.knowledge_graph.nodes
                 if n.technical_subtype == "service"][:8]
     return (
@@ -120,13 +119,24 @@ def refine_dashboard(
     plan_id = str(plan.plan_id)
     prompt = _build_prompt(plan, customer, business_model)
 
+    # Pin gcx to the configured stack (never the ambient current-context,
+    # which can be a customer tenant). Best-effort: if the target can't be
+    # confirmed, skip the assistant refine rather than risk the wrong stack.
+    from proj_clarion.provision.gcx import GcxContextError, gcx_argv
+
+    try:
+        gcx_cmd = gcx_argv(
+            "assistant", "prompt", prompt,
+            "--no-stream", "--json", "--timeout", str(timeout_seconds),
+        )
+    except GcxContextError as exc:
+        msg = f"skipped Grafana-Assistant refine — {exc}"
+        _logger.warning("gs_refine.context_unresolved", error=str(exc))
+        return RefinementResult(plan_id, customer, business_model, [], "", msg)
+
     try:
         proc = subprocess.run(
-            [
-                "gcx", "assistant", "prompt", prompt,
-                "--no-stream", "--json",
-                "--timeout", str(timeout_seconds),
-            ],
+            gcx_cmd,
             capture_output=True, text=True, timeout=timeout_seconds + 10,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError) as exc:

@@ -186,6 +186,32 @@ def telemetry_preflight(
             detail="Grafana Cloud token present (auth not probed).",
         ))
 
+    # ── gcx target stack (provisioning safety) ─────────────────────────
+    # Dashboards / alerts / KG rules are pushed via gcx, which is
+    # multi-context. Confirm Clarion can resolve a gcx context that matches
+    # GRAFANA_CLOUD_STACK_URL — otherwise a provision would either abort or
+    # (pre-fix) hit whatever stack gcx's current-context points at.
+    try:
+        from proj_clarion.provision.gcx import GcxContextError, resolve_gcx_context
+
+        try:
+            ctx = resolve_gcx_context()
+            checks.append(TelemetryCheck(
+                signal="gcx_target", ok=True, severity="ok",
+                detail=f"gcx pushes pinned to context '{ctx}' (matches GRAFANA_CLOUD_STACK_URL).",
+            ))
+        except GcxContextError as exc:
+            checks.append(TelemetryCheck(
+                signal="gcx_target", ok=False, severity="error",
+                detail="gcx target stack can't be confirmed — provisioning will refuse to push.",
+                remediation=str(exc),
+            ))
+    except Exception as exc:  # noqa: BLE001 — never let preflight itself crash
+        checks.append(TelemetryCheck(
+            signal="gcx_target", ok=False, severity="warn",
+            detail=f"Couldn't evaluate gcx target ({exc.__class__.__name__}).",
+        ))
+
     return checks
 
 

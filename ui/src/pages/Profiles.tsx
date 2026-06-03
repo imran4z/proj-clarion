@@ -3,10 +3,9 @@ import { useNavigate, useParams, Link } from "react-router-dom";
 import { useMemo, useState, type ReactNode } from "react";
 import {
   Loader2, Trash2, Sparkles, Activity, Layers, FlaskConical,
-  ChevronRight, ClipboardList, Globe, Check, X, Wand2, FileDown,
+  ChevronRight, ClipboardList, Globe, Check, X, Wand2, FileText,
   ScrollText, CheckCircle2, Eye,
 } from "lucide-react";
-import { downloadDiscoveryBrief } from "@/lib/discoveryBrief";
 
 import {
   listProfiles, getProfile, deleteProfile, listPipelines,
@@ -711,6 +710,7 @@ function ProfileHeader({
   onJumpToPlans: () => void;
 }) {
   const assistant = useAssistant();
+  const navigate = useNavigate();
   const co  = data.company ?? {};
   const tax = data.industry_taxonomy ?? {};
   const companyName = co.name ?? "Unnamed company";
@@ -804,10 +804,10 @@ function ProfileHeader({
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => downloadDiscoveryBrief(data)}
-              title="Download a sales-ready Discovery Brief (HTML) — findings + discovery questions to share with the AE or hand to a sales AI."
+              onClick={() => navigate(`/profiles/${profileId}/deliverable`)}
+              title="Open the sales-ready Discovery Brief — preview the findings + discovery questions, then download HTML, copy Markdown, or save as PDF."
             >
-              <FileDown size={12} /> Export brief
+              <FileText size={12} /> Export brief
             </Button>
             <Button
               variant="secondary"
