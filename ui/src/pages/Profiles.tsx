@@ -26,6 +26,7 @@ import { StatKpi } from "@/components/StatKpi";
 import { AssistantSectionButton, AssistantCtaCard } from "@/components/AssistantCta";
 import { ClarionEmptyArt } from "@/components/icons/ClarionIcons";
 import { Pagination } from "@/components/Pagination";
+import { SearchInput } from "@/components/SearchInput";
 import { ProfileKpiCard, deriveDemoStatus } from "@/components/ProfileKpiCard";
 import { useAssistant } from "@/lib/AssistantContext";
 import { cn } from "@/lib/cn";
@@ -87,15 +88,31 @@ export function ProfilesListPage() {
   const highlights = ordered.slice(0, HIGHLIGHTS_LIMIT);
   const showTable = ordered.length > HIGHLIGHTS_LIMIT;
 
+  // Search/filter — company name or source host/URL. When active, the page
+  // switches from the "Recent + All" split to a single flat results table.
+  const [query, setQuery] = useState("");
+  const q = query.trim().toLowerCase();
+  const filtered = useMemo(() => {
+    if (!q) return ordered;
+    return ordered.filter((p) =>
+      (p.company_name ?? "").toLowerCase().includes(q)
+      || hostOfUrl(p.primary_url).toLowerCase().includes(q)
+      || (p.primary_url ?? "").toLowerCase().includes(q),
+    );
+  }, [ordered, q]);
+  const isSearching = q.length > 0;
+  const activeRows = isSearching ? filtered : ordered;
+
   // Pagination state for the table. Defaulting to 10 rows/page matches
-  // the rest of the app; users can dial up to 50.
+  // the rest of the app; users can dial up to 50. Paginates the ACTIVE
+  // list (filtered when searching, full library otherwise).
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
-  // Clamp page when row count changes (e.g. a delete drops us past the
-  // last page). Without this you can see an empty table page.
-  const totalPages = Math.max(1, Math.ceil(ordered.length / pageSize));
+  // Clamp page when row count changes (e.g. a delete or a filter drops us
+  // past the last page). Without this you can see an empty table page.
+  const totalPages = Math.max(1, Math.ceil(activeRows.length / pageSize));
   const safePage = Math.min(page, totalPages);
-  const pageRows = ordered.slice((safePage - 1) * pageSize, safePage * pageSize);
+  const pageRows = activeRows.slice((safePage - 1) * pageSize, safePage * pageSize);
 
   function navigateToProfile(p: typeof ordered[number]) {
     if (p.pending && p.pipeline_id) {
@@ -175,42 +192,61 @@ export function ProfilesListPage() {
         </Card>
       ) : (
         <>
-          {/* Highlights — top 6 newest as compact KPI cards. */}
-          <section aria-label="Recent profiles">
-            <div className="flex items-baseline justify-between mb-3">
-              <h2 className="text-sm font-medium uppercase tracking-wider text-[var(--color-text-muted)]">
-                Recent
-              </h2>
-              <span className="text-[11px] text-[var(--color-text-faint)] font-mono tabular-nums">
-                {highlights.length} of {ordered.length}
-              </span>
-            </div>
-            <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
-              {highlights.map((p) => (
-                <ProfileKpiCard
-                  key={p.profile_id}
-                  profile={p}
-                  plans={plansByProfile.get(p.profile_id) ?? []}
-                  compact
-                  onClick={() => navigateToProfile(p)}
-                />
-              ))}
-            </div>
-          </section>
+          {/* Search — filters the whole library by company or source. */}
+          <SearchInput
+            value={query}
+            onChange={(v) => { setQuery(v); setPage(1); }}
+            placeholder="Search profiles by company or domain…"
+          />
+
+          {/* Highlights — top 6 newest as compact KPI cards. Hidden while
+              searching (a "newest" surface isn't relevant to a query). */}
+          {!isSearching && (
+            <section aria-label="Recent profiles">
+              <div className="flex items-baseline justify-between mb-3">
+                <h2 className="text-sm font-medium uppercase tracking-wider text-[var(--color-text-muted)]">
+                  Recent
+                </h2>
+                <span className="text-[11px] text-[var(--color-text-faint)] font-mono tabular-nums">
+                  {highlights.length} of {ordered.length}
+                </span>
+              </div>
+              <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+                {highlights.map((p) => (
+                  <ProfileKpiCard
+                    key={p.profile_id}
+                    profile={p}
+                    plans={plansByProfile.get(p.profile_id) ?? []}
+                    compact
+                    onClick={() => navigateToProfile(p)}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
 
           {/* Full list — table + pagination. Only renders when there are
               more profiles than the highlights grid surfaces, so small
               libraries don't see a redundant 4-row table. */}
-          {showTable && (
-            <section aria-label="All profiles">
+          {(isSearching || showTable) && (
+            <section aria-label={isSearching ? "Search results" : "All profiles"}>
               <div className="flex items-baseline justify-between mb-3">
                 <h2 className="text-sm font-medium uppercase tracking-wider text-[var(--color-text-muted)]">
-                  All profiles
+                  {isSearching ? "Results" : "All profiles"}
                 </h2>
                 <span className="text-[11px] text-[var(--color-text-faint)] font-mono tabular-nums">
-                  {ordered.length} total
+                  {isSearching
+                    ? `${filtered.length} match${filtered.length === 1 ? "" : "es"}`
+                    : `${ordered.length} total`}
                 </span>
               </div>
+              {isSearching && filtered.length === 0 ? (
+                <Card>
+                  <div className="p-10 text-center text-sm text-[var(--color-text-muted)]">
+                    No profiles match “{query.trim()}”.
+                  </div>
+                </Card>
+              ) : (
               <Card className="p-0 overflow-hidden">
                 <table className="w-full text-sm">
                   <thead className="text-xs text-[var(--color-text-faint)] uppercase tracking-wider border-b border-[var(--color-border)]">
@@ -280,11 +316,12 @@ export function ProfilesListPage() {
                 <Pagination
                   page={safePage}
                   pageSize={pageSize}
-                  total={ordered.length}
+                  total={activeRows.length}
                   onPageChange={setPage}
                   onPageSizeChange={(n) => { setPageSize(n); setPage(1); }}
                 />
               </Card>
+              )}
             </section>
           )}
         </>

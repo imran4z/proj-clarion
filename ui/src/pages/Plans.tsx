@@ -23,6 +23,7 @@ import { Button } from "@/components/Button";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { JsonEditor } from "@/components/JsonEditor";
 import { Pagination } from "@/components/Pagination";
+import { SearchInput } from "@/components/SearchInput";
 import { PlanKpiCard } from "@/components/PlanKpiCard";
 import { PageHeader } from "@/components/PageHeader";
 import { StatKpi } from "@/components/StatKpi";
@@ -77,11 +78,27 @@ export function PlansListPage() {
   const HIGHLIGHTS_LIMIT = 6;
   const highlights = ordered.slice(0, HIGHLIGHTS_LIMIT);
   const showTable = ordered.length > HIGHLIGHTS_LIMIT;
+
+  // Search/filter — plan id, source profile, or review state.
+  const [query, setQuery] = useState("");
+  const q = query.trim().toLowerCase();
+  const filtered = useMemo(() => {
+    if (!q) return ordered;
+    return ordered.filter((p) =>
+      (p.plan_id ?? "").toLowerCase().includes(q)
+      || (p.plan_id_short ?? "").toLowerCase().includes(q)
+      || (p.source_profile_id ?? "").toLowerCase().includes(q)
+      || (p.review_state ?? "").toLowerCase().includes(q),
+    );
+  }, [ordered, q]);
+  const isSearching = q.length > 0;
+  const activeRows = isSearching ? filtered : ordered;
+
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
-  const totalPages = Math.max(1, Math.ceil(ordered.length / pageSize));
+  const totalPages = Math.max(1, Math.ceil(activeRows.length / pageSize));
   const safePage = Math.min(page, totalPages);
-  const pageRows = ordered.slice((safePage - 1) * pageSize, safePage * pageSize);
+  const pageRows = activeRows.slice((safePage - 1) * pageSize, safePage * pageSize);
 
   function openPlan(p: typeof ordered[number]) {
     if (p.pending && p.pipeline_id) {
@@ -148,40 +165,59 @@ export function PlansListPage() {
         </Card>
       ) : (
         <>
-          {/* Highlights — top 6 most-recently-updated plans as KPI tiles. */}
-          <section aria-label="Recent plans">
-            <div className="flex items-baseline justify-between mb-3">
-              <h2 className="text-sm font-medium uppercase tracking-wider text-[var(--color-text-muted)]">
-                Recent
-              </h2>
-              <span className="text-[11px] text-[var(--color-text-faint)] font-mono tabular-nums">
-                {highlights.length} of {ordered.length}
-              </span>
-            </div>
-            <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
-              {highlights.map((p) => (
-                <PlanKpiCard
-                  key={p.plan_id}
-                  plan={p}
-                  compact
-                  onClick={() => openPlan(p)}
-                />
-              ))}
-            </div>
-          </section>
+          {/* Search — filters by plan id, profile, or review state. */}
+          <SearchInput
+            value={query}
+            onChange={(v) => { setQuery(v); setPage(1); }}
+            placeholder="Search plans by id, profile, or state…"
+          />
+
+          {/* Highlights — top 6 most-recently-updated plans as KPI tiles.
+              Hidden while searching. */}
+          {!isSearching && (
+            <section aria-label="Recent plans">
+              <div className="flex items-baseline justify-between mb-3">
+                <h2 className="text-sm font-medium uppercase tracking-wider text-[var(--color-text-muted)]">
+                  Recent
+                </h2>
+                <span className="text-[11px] text-[var(--color-text-faint)] font-mono tabular-nums">
+                  {highlights.length} of {ordered.length}
+                </span>
+              </div>
+              <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+                {highlights.map((p) => (
+                  <PlanKpiCard
+                    key={p.plan_id}
+                    plan={p}
+                    compact
+                    onClick={() => openPlan(p)}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
 
           {/* Full list — paginated table. Same column shape as the v1
               table, with the new Status column rendered by Badge tone. */}
-          {showTable && (
-            <section aria-label="All plans">
+          {(isSearching || showTable) && (
+            <section aria-label={isSearching ? "Search results" : "All plans"}>
               <div className="flex items-baseline justify-between mb-3">
                 <h2 className="text-sm font-medium uppercase tracking-wider text-[var(--color-text-muted)]">
-                  All plans
+                  {isSearching ? "Results" : "All plans"}
                 </h2>
                 <span className="text-[11px] text-[var(--color-text-faint)] font-mono tabular-nums">
-                  {ordered.length} total
+                  {isSearching
+                    ? `${filtered.length} match${filtered.length === 1 ? "" : "es"}`
+                    : `${ordered.length} total`}
                 </span>
               </div>
+              {isSearching && filtered.length === 0 ? (
+                <Card>
+                  <div className="p-10 text-center text-sm text-[var(--color-text-muted)]">
+                    No plans match “{query.trim()}”.
+                  </div>
+                </Card>
+              ) : (
               <Card className="p-0 overflow-hidden">
                 <table className="w-full text-sm">
                   <thead className="text-xs text-[var(--color-text-faint)] uppercase tracking-wider border-b border-[var(--color-border)]">
@@ -248,11 +284,12 @@ export function PlansListPage() {
                 <Pagination
                   page={safePage}
                   pageSize={pageSize}
-                  total={ordered.length}
+                  total={activeRows.length}
                   onPageChange={setPage}
                   onPageSizeChange={(n) => { setPageSize(n); setPage(1); }}
                 />
               </Card>
+              )}
             </section>
           )}
         </>
